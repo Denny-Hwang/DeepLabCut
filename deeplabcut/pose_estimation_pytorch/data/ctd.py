@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import pickle
-from abc import ABC
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +27,7 @@ class CondProvider(ABC):
     """A class providing conditions for a CTD model."""
 
     @classmethod
+    @abstractmethod
     def get_loader_and_snapshot(
         cls,
         config: str | Path,
@@ -81,18 +82,11 @@ class CondProvider(ABC):
 
             snapshots = loader.snapshots()
             if len(snapshots) == 0:
-                raise ValueError(
-                    f"No snapshots found for shuffle={shuffle} in {loader.model_folder}"
-                )
+                raise ValueError(f"No snapshots found for shuffle={shuffle} in {loader.model_folder}")
 
             if snapshot_index > len(snapshots):
-                snapshot_str = "\n".join(
-                    [f"  {i}: {s.path.name}" for i, s in enumerate(snapshots)]
-                )
-                raise ValueError(
-                    f"Snapshot index {snapshot_index} is out of range. Existing "
-                    f"snapshots: {snapshot_str}"
-                )
+                snapshot_str = "\n".join([f"  {i}: {s.path.name}" for i, s in enumerate(snapshots)])
+                raise ValueError(f"Snapshot index {snapshot_index} is out of range. Existing snapshots: {snapshot_str}")
 
             bu_snapshot = snapshots[snapshot_index]
 
@@ -100,7 +94,7 @@ class CondProvider(ABC):
 
 
 class CondFromFile(CondProvider):
-    """A class providing conditions for a CTD model from a file
+    """A class providing conditions for a CTD model from a file.
 
     Args:
         filepath: The path to the file containing the conditions for the CTD model.
@@ -127,14 +121,32 @@ class CondFromFile(CondProvider):
                     f"snapshot {bu_snapshot.path.name} for {kwargs['shuffle']} "
                     f"was evaluated (which is when the predictions file is created)."
                 )
+        else:
+            filepath = Path(filepath)
 
         if not filepath.exists():
-            raise ValueError(
-                "Conditions file {conditions_filepath} does not exist. Please check "
-                f"the given path."
-            )
+            raise ValueError(f"Conditions file {filepath} does not exist. Please check the given path.")
 
         self.filepath = filepath
+
+    @classmethod
+    def get_loader_and_snapshot(
+        cls,
+        config: str | Path,
+        shuffle: int,
+        trainset_index: int = 0,
+        modelprefix: str = "",
+        snapshot: str | None = None,
+        snapshot_index: int | None = None,
+    ) -> tuple[DLCLoader, Snapshot]:
+        return super().get_loader_and_snapshot(
+            config=config,
+            shuffle=shuffle,
+            trainset_index=trainset_index,
+            modelprefix=modelprefix,
+            snapshot=snapshot,
+            snapshot_index=snapshot_index,
+        )
 
     def load_conditions(
         self,
@@ -170,8 +182,7 @@ class CondFromFile(CondProvider):
             return self.load_conditions_pickle(self.filepath)
 
         raise ValueError(
-            f"Unknown file suffix {suffix}. Can only read conditions from HDF5 or JSON "
-            f"files. Received {self.filepath}."
+            f"Unknown file suffix {suffix}. Can only read conditions from HDF5 or JSON files. Received {self.filepath}."
         )
 
     @staticmethod
@@ -180,7 +191,7 @@ class CondFromFile(CondProvider):
         images: list[str] | None = None,
         path_prefix: str | Path | None = None,
     ) -> dict[str, np.ndarray] | list[np.ndarray]:
-        """Loads conditions for a model from a pandas DataFrame stored in an HDF file
+        """Loads conditions for a model from a pandas DataFrame stored in an HDF file.
 
         When loading conditions for individual images, the `images` must be provided
         (indicating which images to load conditions for). A dict is returned containing
@@ -225,6 +236,7 @@ class CondFromFile(CondProvider):
                 Each array has shape (num_conditions, num_bodyparts, 3).
             If "images" is None: a list containing the conditions for each frame.
         """
+
         def _parse_row(df_row) -> np.ndarray:
             # Row to numpy and reshape
             pose = df_row.to_numpy().reshape((num_conditions, num_bodyparts, 3))
@@ -277,8 +289,7 @@ class CondFromFile(CondProvider):
         missing = image_set.difference(set(conditions.keys()))
         if len(missing) > 0:
             print(
-                f"Warning: did not find conditions for {len(missing)} of the {len(images)} "
-                f"images. Missing conditions:"
+                f"Warning: did not find conditions for {len(missing)} of the {len(images)} images. Missing conditions:"
             )
             for img_path in missing:
                 print(f"  - {img_path}")
@@ -348,15 +359,15 @@ class CondFromFile(CondProvider):
             A dictionary mapping image paths to condition arrays. Each array has shape
             (num_conditions, num_bodyparts, 3).
         """
-        with open(filepath, "r") as f:
+        with open(filepath) as f:
             conditions = json.load(f)
 
         # Parse list and return
         if images is None:
+            # TODO @deruyter92: decide on typed / plain list
             if not isinstance(conditions, list):
                 raise ValueError(
-                    f"Conditions are expected to be of type list when `images=None`, "
-                    f"got {type(conditions)}."
+                    f"Conditions are expected to be of type list when `images=None`, got {type(conditions)}."
                 )
 
             parsed = []
@@ -367,6 +378,7 @@ class CondFromFile(CondProvider):
                     parsed.append(np.asarray(cond))
             return parsed
 
+        # TODO @deruyter92: decide on typed / plain dict
         if not isinstance(conditions, dict):
             raise ValueError(
                 f"Conditions are expected to be of type dict, got {type(conditions)}. "
@@ -377,9 +389,7 @@ class CondFromFile(CondProvider):
 
         path_with_prefix_to_key = {}
         if path_prefix is not None:
-            path_with_prefix_to_key = {
-                str(Path(path_prefix) / k): k for k in conditions.keys()
-            }
+            path_with_prefix_to_key = {str(Path(path_prefix) / k): k for k in conditions.keys()}
 
         parsed = {}
         missing = []
@@ -399,8 +409,7 @@ class CondFromFile(CondProvider):
 
         if len(missing) > 0:
             print(
-                f"Warning: did not find conditions for {len(missing)} of the "
-                f"{len(images)} images. Missing conditions:"
+                f"Warning: did not find conditions for {len(missing)} of the {len(images)} images. Missing conditions:"
             )
             for img_path in missing:
                 print(f"  - {img_path}")
@@ -409,7 +418,7 @@ class CondFromFile(CondProvider):
 
     @staticmethod
     def load_conditions_pickle(filepath: str | Path) -> list[np.ndarray]:
-        """Loads conditions from a `*_assemblies.pickle` file containing predictions
+        """Loads conditions from a `*_assemblies.pickle` file containing predictions.
 
         Args:
             filepath: Path to the Pickle file containing conditions.
@@ -418,7 +427,7 @@ class CondFromFile(CondProvider):
             data = pickle.load(f)
 
         frames = [f for f in data.keys() if isinstance(f, int)]
-        n_frames = max(*frames)
+        n_frames = max(*frames) + 1
 
         parsed = []
         for i in range(n_frames):
@@ -479,3 +488,22 @@ class CondFromModel(CondProvider):
         self.config_path = config_path
         self.snapshot_path = snapshot_path
         self.scorer = scorer
+
+    @classmethod
+    def get_loader_and_snapshot(
+        cls,
+        config: str | Path,
+        shuffle: int,
+        trainset_index: int = 0,
+        modelprefix: str = "",
+        snapshot: str | None = None,
+        snapshot_index: int | None = None,
+    ) -> tuple[DLCLoader, Snapshot]:
+        return super().get_loader_and_snapshot(
+            config=config,
+            shuffle=shuffle,
+            trainset_index=trainset_index,
+            modelprefix=modelprefix,
+            snapshot=snapshot,
+            snapshot_index=snapshot_index,
+        )

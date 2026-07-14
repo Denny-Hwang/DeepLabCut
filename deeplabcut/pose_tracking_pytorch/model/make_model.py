@@ -11,12 +11,13 @@
 
 import torch
 import torch.nn as nn
+
 from .backbones.vit_pytorch import dlc_base_kpt_TransReID
 
 
 class build_dlc_transformer(nn.Module):
     def __init__(self, cfg, in_chans, kpt_num, factory):
-        super(build_dlc_transformer, self).__init__()
+        super().__init__()
         self.cos_layer = cfg["cos_layer"]
         self.in_planes = 128
         self.kpt_num = kpt_num
@@ -47,10 +48,12 @@ class build_dlc_transformer(nn.Module):
         return q
 
     def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
+        # Use CUDA if available, otherwise use CPU
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        param_dict = torch.load(trained_path, map_location=device)
         for i in param_dict:
             self.state_dict()[i.replace("module.", "")].copy_(param_dict[i])
-        print("Loading pretrained model from {}".format(trained_path))
+        print(f"Loading pretrained model from {trained_path}")
 
 
 __factory_T_type = {

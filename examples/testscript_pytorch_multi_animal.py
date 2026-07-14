@@ -8,21 +8,28 @@
 #
 # Licensed under GNU Lesser General Public License v3.0
 #
-"""Testscript for single animal PyTorch projects"""
+"""Testscript for single animal PyTorch projects."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
-import deeplabcut.utils.auxiliaryfunctions as af
-from deeplabcut.compat import Engine
-
 from utils import (
+    SyntheticProjectParameters,
     cleanup,
     create_fake_project,
     log_step,
     run,
-    SyntheticProjectParameters,
 )
+
+# Enable pandas future mode warnings if DLC_PANDAS_FUTURE env var is set
+from deeplabcut.utils.pandas_future_mode import configure_pandas_future_if_enabled
+
+configure_pandas_future_if_enabled()
+
+import deeplabcut.utils.auxiliaryfunctions as af  # noqa: E402
+from deeplabcut.compat import Engine  # noqa: E402
+from deeplabcut.pose_estimation_pytorch.config.utils import is_model_cond_top_down, is_model_top_down  # noqa: E402
 
 
 def main(
@@ -37,6 +44,7 @@ def main(
     max_snapshots_to_keep: int = 5,
     device: str = "cpu",
     logger: dict | None = None,
+    conditions_shuffle: int = 0,
     create_labeled_videos: bool = False,
     delete_after_test_run: bool = False,
 ) -> None:
@@ -51,9 +59,33 @@ def main(
     try:
         for net_type in net_types:
             epochs_ = epochs
-            if "top_down" in net_type:
+            if is_model_top_down(net_type):
                 epochs_ = top_down_epochs
             try:
+                pytorch_cfg_updates = {
+                    "train_settings.display_iters": 50,
+                    "train_settings.epochs": epochs_,
+                    "train_settings.batch_size": batch_size,
+                    "train_settings.dataloader_workers": 0,
+                    "runner.device": device,
+                    "runner.snapshots.save_epochs": save_epochs,
+                    "runner.snapshots.max_snapshots": max_snapshots_to_keep,
+                    "logger": logger,
+                }
+
+                # Only add detector config updates for top-down models
+                if is_model_top_down(net_type):
+                    pytorch_cfg_updates.update(
+                        {
+                            "detector.train_settings.display_iters": 1,
+                            "detector.train_settings.epochs": detector_epochs,
+                            "detector.train_settings.batch_size": detector_batch_size,
+                            "detector.train_settings.dataloader_workers": 0,
+                            "detector.runner.snapshots.save_epochs": save_epochs,
+                            "detector.runner.snapshots.max_snapshots": max_snapshots_to_keep,
+                        }
+                    )
+
                 run(
                     config_path=config_path,
                     train_fraction=train_frac,
@@ -62,21 +94,9 @@ def main(
                     videos=[str(project_path / "videos" / "video.mp4")],
                     device=device,
                     engine=engine,
-                    pytorch_cfg_updates={
-                        "train_settings.display_iters": 50,
-                        "train_settings.epochs": epochs_,
-                        "train_settings.batch_size": batch_size,
-                        "runner.device": device,
-                        "runner.snapshots.save_epochs": save_epochs,
-                        "runner.snapshots.max_snapshots": max_snapshots_to_keep,
-                        "detector.train_settings.display_iters": 1,
-                        "detector.train_settings.epochs": detector_epochs,
-                        "detector.train_settings.batch_size": detector_batch_size,
-                        "detector.runner.snapshots.save_epochs": save_epochs,
-                        "detector.runner.snapshots.max_snapshots": max_snapshots_to_keep,
-                        "logger": logger,
-                    },
+                    pytorch_cfg_updates=pytorch_cfg_updates,
                     create_labeled_videos=create_labeled_videos,
+                    ctd_conditions=(conditions_shuffle, -1) if is_model_cond_top_down(net_type) else None,
                 )
             except Exception as err:
                 log_step(f"FAILED TO RUN {net_type}")
@@ -95,8 +115,15 @@ if __name__ == "__main__":
         "project_name": "testscript-dev",
         "run_name": "test-logging",
     }
+    net_types = [
+        "top_down_resnet_50",
+        "resnet_50",
+        "dekr_w32",
+        "rtmpose_m",
+        "ctd_coam_w32",
+    ]
     main(
-        net_types=["top_down_resnet_50", "resnet_50", "dekr_w32"],
+        net_types=net_types,
         params=SyntheticProjectParameters(
             multianimal=True,
             num_bodyparts=4,
@@ -114,6 +141,7 @@ if __name__ == "__main__":
         max_snapshots_to_keep=2,
         device="cpu",  # "cpu", "cuda:0", "mps"
         logger=None,
+        conditions_shuffle=net_types.index("resnet_50") + 1,  # shuffles start at index 1
         create_labeled_videos=True,
         delete_after_test_run=True,
     )

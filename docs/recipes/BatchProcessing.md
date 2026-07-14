@@ -1,3 +1,9 @@
+---
+deeplabcut:
+  last_content_updated: '2025-09-16'
+  last_metadata_updated: '2026-03-06'
+  ignore: false
+---
 
 # Automate training and video analysis: Batch Processing
 
@@ -63,7 +69,7 @@ subfolders = getsubfolders(basepath)
 for subfolder in subfolders: #this would be January, February etc. in the upper example
     print("Starting analyze data in: ", subfolder)
     subsubfolders = getsubfolders(subfolder)
-    for subsubfolder in subsubfolders: #this would be Febuary1, etc. in the upper example...
+    for subsubfolder in subsubfolders: #this would be February1, etc. in the upper example...
         print("Starting analyze data in: ", subsubfolder)
         for vtype in [".mp4", ".m4v", ".mpg"]:
             deeplabcut.analyze_videos(config,[subsubfolder],shuffle=shuffle,videotype=vtype,save_as_csv=True)
@@ -73,7 +79,8 @@ for subfolder in subfolders: #this would be January, February etc. in the upper 
 ## Now, what about training over multiple Projects
 
 Make your labmates happy by helping run everyone's projects! We use this for workshops, but can easily be adapted for your needs. Here is an example script. You can copy/paste into a file and end with ".py" to make it a python script.
-```
+
+````
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -126,10 +133,11 @@ for project in Projects[model]:
     for vtype in ['.mp4','.m4v','.mpg']:
         try:
             deeplabcut.analyze_videos(config, [str(os.path.join(projectpath, "videos"))], shuffle=shuffle, videotype=vtype, save_as_csv=True)
-        except:
+        except Exception:
             pass
 
     print("DONE WITH ", project," resetting to original path")
     cfg["project_path"] = previous_path
     deeplabcut.auxiliaryfunctions.write_config(config, cfg)
     ```
+````

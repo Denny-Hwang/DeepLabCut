@@ -8,13 +8,15 @@
 #
 # Licensed under GNU Lesser General Public License v3.0
 #
-"""Tests the pre-processors"""
+"""Tests the pre-processors."""
+
 import numpy as np
 import pytest
 
 from deeplabcut.pose_estimation_pytorch.data.postprocessor import (
     PredictKeypointIdentities,
     PrepareBackboneFeatures,
+    RemoveLowConfidenceBoxes,
     RescaleAndOffset,
     TrimOutputs,
 )
@@ -56,7 +58,7 @@ from deeplabcut.pose_estimation_pytorch.data.postprocessor import (
     ],
 )
 def test_rescale_topdown(data):
-    """expects x_processed = x * scale + offset"""
+    """Expects x_processed = x * scale + offset."""
     postprocessor = RescaleAndOffset(
         keys_to_rescale=["bodyparts"],
         mode=RescaleAndOffset.Mode.KEYPOINT_TD,
@@ -85,7 +87,7 @@ def test_rescale_topdown(data):
     ],
 )
 def test_trim_outputs(data):
-    """expects x_processed = x * scale + offset"""
+    """Expects x_processed = x * scale + offset."""
     postprocessor = TrimOutputs(max_individuals=data["max_individuals"])
     context = {}
     predictions = {"bboxes": np.array(data["bboxes"]), "bbox_scores": np.array(data["bbox_scores"])}
@@ -120,7 +122,7 @@ def test_trim_outputs(data):
     ],
 )
 def test_rescale_bottom_up(data):
-    """expects x_processed = x * scale + offset"""
+    """Expects x_processed = x * scale + offset."""
     postprocessor = RescaleAndOffset(
         keys_to_rescale=["bodyparts"],
         mode=RescaleAndOffset.Mode.KEYPOINT,
@@ -165,7 +167,7 @@ def test_rescale_bottom_up(data):
     ],
 )
 def test_rescale_detector(data):
-    """expects x_processed = x * scale + offset"""
+    """Expects x_processed = x * scale + offset."""
     postprocessor = RescaleAndOffset(
         keys_to_rescale=["bboxes"],
         mode=RescaleAndOffset.Mode.BBOX_XYWH,
@@ -231,13 +233,15 @@ def test_prepare_backbone_features():
     features[0, 25, 20] = 2
     features[0, 35, 30] = 3
 
-    pose = np.array([
+    pose = np.array(
         [
-            [10.1, 15.1, 0.95],
-            [20.1, 25.1, 0.95],
-            [29.9, 34.9, 0.95],
-        ],
-    ])
+            [
+                [10.1, 15.1, 0.95],
+                [20.1, 25.1, 0.95],
+                [29.9, 34.9, 0.95],
+            ],
+        ]
+    )
 
     predictions = [dict(backbone=dict(features=features), bodypart=dict(poses=pose))]
     context = dict(image_size=(img_w, img_h))
@@ -269,13 +273,15 @@ def test_prepare_top_down_backbone_features():
     features[1, 0, 85, 20] = 12
     features[1, 0, 75, 30] = 13
 
-    pose_idv0 = np.array([
+    pose_idv0 = np.array(
         [
-            [10.1, 15.1, 0.95],
-            [20.1, 25.1, 0.95],
-            [29.9, 34.9, 0.95],
-        ],
-    ])
+            [
+                [10.1, 15.1, 0.95],
+                [20.1, 25.1, 0.95],
+                [29.9, 34.9, 0.95],
+            ],
+        ]
+    )
     pose_idv1 = np.array(
         [
             [
@@ -295,7 +301,7 @@ def test_prepare_top_down_backbone_features():
 
     assert len(predictions_out) == 2
     assert len(context_out) == 1
-    for preds, expected in zip(predictions_out, [[1, 2, 3], [11, 12, 13]]):
+    for preds, expected in zip(predictions_out, [[1, 2, 3], [11, 12, 13]], strict=True):
         assert "backbone" in preds
         assert "bodypart_features" in preds["backbone"]
         bodypart_features = preds["backbone"]["bodypart_features"]
@@ -303,3 +309,115 @@ def test_prepare_top_down_backbone_features():
         print(bodypart_features)
         assert bodypart_features.shape == (1, 3, 1)
         assert bodypart_features.reshape(-1).tolist() == expected
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {
+            "bboxes": [[0, 0, 10, 10], [20, 20, 30, 30], [40, 40, 50, 50]],
+            "bbox_scores": [0.1, 0.5, 0.9],
+            "threshold": 0.3,
+            "expected_bboxes": [[20, 20, 30, 30], [40, 40, 50, 50]],
+            "expected_scores": [0.5, 0.9],
+        },
+        {
+            "bboxes": [[0, 0, 10, 10], [20, 20, 30, 30], [40, 40, 50, 50]],
+            "bbox_scores": [0.1, 0.2, 0.3],
+            "threshold": 0.5,
+            "expected_bboxes": [],
+            "expected_scores": [],
+        },
+        {
+            "bboxes": [[0, 0, 10, 10], [20, 20, 30, 30]],
+            "bbox_scores": [0.3, 0.7],
+            "threshold": 0.3,
+            "expected_bboxes": [[0, 0, 10, 10], [20, 20, 30, 30]],
+            "expected_scores": [0.3, 0.7],
+        },
+        {
+            "bboxes": [],
+            "bbox_scores": [],
+            "threshold": 0.5,
+            "expected_bboxes": [],
+            "expected_scores": [],
+        },
+    ],
+)
+def test_remove_low_confidence_boxes(data):
+    """Tests that RemoveLowConfidenceBoxes filters boxes below threshold."""
+    postprocessor = RemoveLowConfidenceBoxes(bbox_score_thresh=data["threshold"])
+    context = {}
+
+    # Handle empty input arrays with proper shape
+    if len(data["bboxes"]) == 0:
+        bboxes = np.empty((0, 4))
+    else:
+        bboxes = np.array(data["bboxes"])
+
+    if len(data["bbox_scores"]) == 0:
+        bbox_scores = np.empty((0,))
+    else:
+        bbox_scores = np.array(data["bbox_scores"])
+
+    predictions = {
+        "bboxes": bboxes,
+        "bbox_scores": bbox_scores,
+    }
+    predictions, context = postprocessor(predictions, context=context)
+
+    # Handle empty expected arrays with proper shape
+    if len(data["expected_bboxes"]) == 0:
+        expected_bboxes = np.empty((0, 4))
+    else:
+        expected_bboxes = np.array(data["expected_bboxes"])
+
+    if len(data["expected_scores"]) == 0:
+        expected_scores = np.empty((0,))
+    else:
+        expected_scores = np.array(data["expected_scores"])
+
+    np.testing.assert_array_equal(predictions["bboxes"], expected_bboxes)
+    np.testing.assert_array_equal(predictions["bbox_scores"], expected_scores)
+
+
+def test_predict_keypoint_identities_handles_nan_keypoints():
+    import warnings
+
+    p = PredictKeypointIdentities(
+        identity_key="keypoint_identity",
+        identity_map_key="identity_map",
+        pose_key="bodyparts",
+        keep_id_maps=True,
+    )
+
+    # PAF-style output: (num_individuals, num_bodyparts, 5); missing joint is all-NaN
+    bodyparts = np.array(
+        [
+            [
+                [3.1, 1.0, 0.8, 0.0, 0.5],  # valid
+                [np.nan, np.nan, np.nan, np.nan, np.nan],  # missing (assembler default)
+                [1.0, 0.0, 0.9, 1.0, 0.5],  # valid
+            ],
+        ]
+    )
+    id_heatmap = np.array(
+        [
+            [[0.1, 0.1], [0.2, 0.1], [0.3, 0.1], [0.4, 0.1]],
+            [[0.1, 0.2], [0.2, 0.2], [0.3, 0.2], [0.4, 0.2]],
+            [[0.1, 0.3], [0.2, 0.3], [0.3, 0.3], [0.4, 0.3]],
+            [[0.1, 0.4], [0.2, 0.4], [0.3, 0.4], [0.4, 0.4]],
+        ]
+    )
+    predictions_in = {"bodyparts": bodyparts, "identity_map": id_heatmap}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        predictions, _ = p(predictions_in, {})
+
+    expected = np.zeros((1, 3, 2))
+    expected[0, 0] = id_heatmap[1, 3]  # rint(3.1, 1.0) -> (3, 1)
+    expected[0, 1] = 0.0  # NaN keypoint: leave identity scores at zero
+    expected[0, 2] = id_heatmap[0, 1]  # rint(1.0, 0.0) -> (1, 0)
+
+    np.testing.assert_array_equal(predictions["keypoint_identity"], expected)

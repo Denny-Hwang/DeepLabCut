@@ -22,10 +22,10 @@ import deeplabcut.core.config as config_utils
 import deeplabcut.pose_estimation_pytorch.utils as utils
 from deeplabcut.core.weight_init import WeightInitialization
 from deeplabcut.pose_estimation_pytorch.data import (
-    build_transforms,
     COCOLoader,
     DLCLoader,
     Loader,
+    build_transforms,
 )
 from deeplabcut.pose_estimation_pytorch.data.collate import COLLATE_FUNCTIONS
 from deeplabcut.pose_estimation_pytorch.models import DETECTORS, PoseModel
@@ -34,8 +34,8 @@ from deeplabcut.pose_estimation_pytorch.modelzoo.memory_replay import (
 )
 from deeplabcut.pose_estimation_pytorch.runners import build_training_runner
 from deeplabcut.pose_estimation_pytorch.runners.logger import (
-    destroy_file_logging,
     LOGGER,
+    destroy_file_logging,
     setup_file_logging,
 )
 from deeplabcut.pose_estimation_pytorch.task import Task
@@ -54,7 +54,7 @@ def train(
     max_snapshots_to_keep: int | None = None,
     load_head_weights: bool = True,
 ) -> None:
-    """Builds a model from a configuration and fits it to a dataset
+    """Builds a model from a configuration and fits it to a dataset.
 
     Args:
         loader: the loader containing the data to train on/validate with
@@ -78,6 +78,10 @@ def train(
     if weight_init_cfg := run_config["train_settings"].get("weight_init"):
         weight_init = WeightInitialization.from_dict(weight_init_cfg)
         pretrained = False
+    elif snapshot_path is not None:
+        # If we're loading from a snapshot, don't use pretrained backbone weights
+        # since the weights will be loaded from the snapshot
+        pretrained = False
 
     if task == Task.DETECT:
         model = DETECTORS.build(
@@ -98,7 +102,7 @@ def train(
 
     logger = None
     if logger_config is not None:
-        logger = LOGGER.build(dict(**logger_config, model=model))
+        logger = LOGGER.build({**logger_config, "model": model, "train_folder": loader.model_folder})
         logger.log_config(run_config)
 
     if device is None:
@@ -139,9 +143,7 @@ def train(
     logging.info(f"  Validation: {inference_transform}")
 
     train_dataset = loader.create_dataset(transform=transform, mode="train", task=task)
-    valid_dataset = loader.create_dataset(
-        transform=inference_transform, mode="test", task=task
-    )
+    valid_dataset = loader.create_dataset(transform=inference_transform, mode="test", task=task)
 
     collate_fn = None
     if collate_fn_cfg := run_config["data"]["train"].get("collate"):
@@ -161,14 +163,16 @@ def train(
     )
     valid_dataloader = DataLoader(valid_dataset, batch_size=1, shuffle=False)
 
+    # TODO @deruyter92: This pattern should be refactored throughout the codebase
+    # it is reading a config value that is supposed to be missing / None.
     if (
         loader.model_cfg["model"].get("freeze_bn_stats", False)
-        or loader.model_cfg["model"].get("backbone", {}).get("freeze_bn_stats", False)
+        or (loader.model_cfg["model"].get("backbone") or {}).get("freeze_bn_stats", False)
         or batch_size == 1
     ):
         logging.info(
             "\nNote: According to your model configuration, you're training with batch "
-            "size 1 and/or ``freeze_bn_stats=false``. This is not an optimal setting "
+            "size 1 and/or ``freeze_bn_stats=true``. This is not an optimal setting "
             "if you have powerful GPUs.\n"
             "This is good for small batch sizes (e.g., when training on a CPU), where "
             "you should keep ``freeze_bn_stats=true``.\n"
@@ -181,9 +185,7 @@ def train(
             "scale the learning rate by sqrt(batch_size) times).\n"
         )
 
-    logging.info(
-        f"Using {len(train_dataset)} images and {len(valid_dataset)} for testing"
-    )
+    logging.info(f"Using {len(train_dataset)} images and {len(valid_dataset)} for testing")
     if task == task.DETECT:
         logging.info("\nStarting object detector training...\n" + (50 * "-"))
     else:
@@ -217,7 +219,7 @@ def train_network(
     pose_threshold: float | None = 0.1,
     pytorch_cfg_updates: dict | None = None,
 ) -> None:
-    """Trains a network for a project
+    """Trains a network for a project.
 
     Args:
         config : path to the yaml config file of the project
@@ -299,28 +301,35 @@ def train_network(
                 train_json_filename="memory_replay_train.json",
             )
 
+    # Pose model training settings
     if batch_size is not None:
-        loader.model_cfg["train_settings"]["batch_size"] = batch_size
+        loader.model_cfg.train_settings.batch_size = batch_size
     if epochs is not None:
-        loader.model_cfg["train_settings"]["epochs"] = epochs
+        loader.model_cfg.train_settings.epochs = epochs
     if save_epochs is not None:
-        loader.model_cfg["runner"]["snapshots"]["save_epochs"] = save_epochs
+        loader.model_cfg.runner.snapshots.save_epochs = save_epochs
     if display_iters is not None:
-        loader.model_cfg["train_settings"]["display_iters"] = display_iters
+        loader.model_cfg.train_settings.display_iters = display_iters
 
-    detector_cfg = loader.model_cfg.get("detector")
-    if detector_cfg is not None:
+    # Detector config settings (if exists)
+    if loader.model_cfg.get("detector") is not None:
         if detector_batch_size is not None:
-            detector_cfg["train_settings"]["batch_size"] = detector_batch_size
+            loader.model_cfg.detector.train_settings.batch_size = detector_batch_size
         if detector_epochs is not None:
-            detector_cfg["train_settings"]["epochs"] = detector_epochs
+            loader.model_cfg.detector.train_settings.epochs = detector_epochs
         if detector_save_epochs is not None:
-            detector_cfg["runner"]["snapshots"]["save_epochs"] = detector_save_epochs
+            loader.model_cfg.detector.runner.snapshots.save_epochs = detector_save_epochs
         if display_iters is not None:
-            detector_cfg["train_settings"]["display_iters"] = display_iters
+            loader.model_cfg.detector.train_settings.display_iters = display_iters
 
+    # Optional generic overrides
     if pytorch_cfg_updates is not None:
-        loader.update_model_cfg(pytorch_cfg_updates)
+        for key, value in pytorch_cfg_updates.items():
+            loader.model_cfg.set_nested(key, value)
+
+    # Save the updated config
+    loader.model_cfg.log_changes()
+    loader.model_cfg.to_yaml(loader.model_config_path)
 
     setup_file_logging(loader.model_folder / "train.txt")
 
@@ -332,10 +341,7 @@ def train_network(
 
     # get the pose task
     pose_task = Task(loader.model_cfg.get("method", "bu"))
-    if (
-        pose_task == Task.TOP_DOWN
-        and loader.model_cfg["detector"]["train_settings"]["epochs"] > 0
-    ):
+    if pose_task == Task.TOP_DOWN and loader.model_cfg["detector"]["train_settings"]["epochs"] > 0:
         logger_config = None
         if loader.model_cfg.get("logger"):
             logger_config = copy.deepcopy(loader.model_cfg["logger"])
@@ -343,9 +349,7 @@ def train_network(
 
         detector_run_config = loader.model_cfg["detector"]
         detector_run_config["device"] = loader.model_cfg["device"]
-        detector_run_config["train_settings"]["weight_init"] = loader.model_cfg[
-            "train_settings"
-        ].get("weight_init")
+        detector_run_config["train_settings"]["weight_init"] = loader.model_cfg["train_settings"].get("weight_init")
         train(
             loader=loader,
             run_config=detector_run_config,

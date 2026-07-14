@@ -18,14 +18,10 @@ from PySide6.QtCore import Qt
 
 from deeplabcut.generate_training_dataset import check_labels
 from deeplabcut.gui.components import DefaultTab
-from deeplabcut.gui.widgets import launch_napari
-from deeplabcut.utils.skeleton import SkeletonBuilder
+from deeplabcut.gui.widgets import SkeletonBuilder, launch_napari
 
 
-def label_frames(
-    config_path: str | Path | None = None,
-    image_folder: str | None = None
-):
+def label_frames(config_path: str | Path | None = None, image_folder: str | None = None):
     """Launches the napari-deeplabcut labelling GUI.
 
     For more information on labelling data with napari-deeplabcut, see our docs:
@@ -63,6 +59,7 @@ def label_frames(
         ├── ...
         ├── 2025-01-01-experiment7    # folder containing the images to label
         └── ...
+
     >>> deeplabcut.label_frames(
     >>>     "C:\\myproject\\reaching-task\\config.yaml",
     >>>     "2025-01-01-experiment7",
@@ -102,9 +99,10 @@ refine_labels = label_frames
 
 class LabelFrames(DefaultTab):
     def __init__(self, root, parent, h1_description):
-        super(LabelFrames, self).__init__(root, parent, h1_description)
+        super().__init__(root, parent, h1_description)
 
         self._set_page()
+        self.skeleton_builder = None
 
     def _set_page(self):
         self.label_frames_btn = QtWidgets.QPushButton("Label Frames")
@@ -124,9 +122,7 @@ class LabelFrames(DefaultTab):
         dialog = QtWidgets.QFileDialog(self)
         dialog.setFileMode(QtWidgets.QFileDialog.Directory)
         dialog.setViewMode(QtWidgets.QFileDialog.Detail)
-        dialog.setDirectory(
-            os.path.join(os.path.dirname(self.root.config), "labeled-data")
-        )
+        dialog.setDirectory(os.path.join(os.path.dirname(self.root.config), "labeled-data"))
         if dialog.exec_():
             folder = dialog.selectedFiles()[0]
             has_h5 = False
@@ -143,5 +139,14 @@ class LabelFrames(DefaultTab):
         labeled_images = (Path(self.root.config).parent / "labeled-data").rglob("*_labeled/*.png")
         _ = launch_napari(labeled_images, plugin="napari", stack=True)
 
+    def _on_skeleton_builder_destroyed(self):
+        self.skeleton_builder = None
+
     def build_skeleton(self, *args):
-        SkeletonBuilder(self.root.config)
+        if self.skeleton_builder is None:
+            self.skeleton_builder = SkeletonBuilder(
+                config_path=self.root.config,
+                parent=self.root,
+            )
+            self.skeleton_builder.show()
+            self.skeleton_builder.destroyed.connect(self._on_skeleton_builder_destroyed)

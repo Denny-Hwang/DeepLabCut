@@ -8,7 +8,8 @@
 #
 # Licensed under GNU Lesser General Public License v3.0
 #
-"""Tests exporting models"""
+"""Tests exporting models."""
+
 import copy
 import shutil
 from pathlib import Path
@@ -16,17 +17,36 @@ from unittest.mock import Mock, patch
 
 import pytest
 import torch
+from ruamel.yaml.scalarstring import SingleQuotedScalarString as SQS
 
 import deeplabcut.pose_estimation_pytorch.apis.export as export
-import deeplabcut.utils.auxiliaryfunctions as af
+from deeplabcut.core.config import ProjectConfig
 from deeplabcut.pose_estimation_pytorch import Task
+from deeplabcut.pose_estimation_pytorch.config.pose import PoseConfig
 from deeplabcut.pose_estimation_pytorch.runners.snapshots import Snapshot
+
+
+def _minimal_pose_config(tmp_path: Path, *, resume_from: str = "/abs/snapshot.pt") -> PoseConfig:
+    project_config = ProjectConfig(
+        project_path=tmp_path,
+        bodyparts=["nose"],
+        individuals=["mouse"],
+        multianimalproject=False,
+    )
+    pose_config = PoseConfig.build(
+        project_config,
+        tmp_path / "pytorch_config.yaml",
+        top_down=False,
+        net_type="resnet_50",
+    )
+    pose_config.resume_training_from = resume_from
+    return pose_config
 
 
 @pytest.fixture()
 def project_dir(tmp_path_factory) -> Path:
     project_dir = tmp_path_factory.mktemp("tmp-project")
-    print(f"\nTemporary project directory:")
+    print("\nTemporary project directory:")
     print(str(project_dir))
     print("---")
     yield project_dir
@@ -37,18 +57,18 @@ def _mock_multianimal_project(project_dir: Path):
     video_dir = project_dir / "videos"
     video_dir.mkdir(exist_ok=True)
 
-    cfg_file, yaml_file = af.create_config_template(multianimal=True)
-    cfg_file["Task"] = "mock"
-    cfg_file["scorer"] = "mock"
-    cfg_file["video_sets"] = {str(video_dir / "vid.mp4"): dict(crop="0, 640, 0, 480")}
-    cfg_file["project_path"] = str(project_dir)
-    cfg_file["individuals"] = ["a", "b"]
-    cfg_file["uniquebodyparts"] = []
-    cfg_file["multianimalbodyparts"] = ["k1", "k2", "k3"]
-    cfg_file["bodyparts"] = "MULTI!"
-
-    with open(project_dir / "config.yaml", "w") as f:
-        yaml_file.dump(cfg_file, f)
+    cfg_file = ProjectConfig(
+        multianimalproject=True,
+        Task="mock",
+        scorer="mock",
+        video_sets={SQS((video_dir / "vid.mp4").as_posix()): {"crop": "0, 640, 0, 480"}},
+        project_path=project_dir.as_posix(),
+        individuals=["a", "b"],
+        uniquebodyparts=[],
+        multianimalbodyparts=["k1", "k2", "k3"],
+        bodyparts="MULTI!",
+    )
+    cfg_file.to_yaml(project_dir / "config.yaml")
 
 
 def _make_mock_loader(
@@ -91,6 +111,14 @@ def _make_mock_loader(
     return loader
 
 
+def test_wipe_paths_clears_resume_training_from(tmp_path: Path) -> None:
+    cfg = _minimal_pose_config(tmp_path)
+    export.wipe_paths_from_model_config(cfg)
+    assert cfg.resume_training_from is None
+    assert cfg.metadata.project_path is None
+    assert cfg.metadata.pose_config_path is None
+
+
 def _get_export_model_data(
     project_dir: Path,
     num_snapshots: int,
@@ -118,9 +146,7 @@ def _get_export_model_data(
             snapshot_path = model_dir / f"snapshot-detector-{i:03}.pt"
             torch.save(snapshot, snapshot_path)
             detector_data.append(snapshot)
-            detector_snapshots.append(
-                Snapshot(best=False, epochs=i, path=snapshot_path)
-            )
+            detector_snapshots.append(Snapshot(best=False, epochs=i, path=snapshot_path))
 
     mock_loader = _make_mock_loader(
         project_path=project_dir,
@@ -264,47 +290,35 @@ def test_export_change_iteration(project_dir, task: Task, iteration: int):
     snapshot = snapshots[0]
     detector = None if task == Task.BOTTOM_UP else detector_snapshots[0]
 
-    loader_diff_iter = _get_export_model_data(
-        project_dir, 1, task, project_iteration=iteration
-    )[0]
+    loader_diff_iter = _get_export_model_data(project_dir, 1, task, project_iteration=iteration)[0]
 
     def get_mock_loader(config, *args, **kwargs):
         _loader = copy.deepcopy(mock_loader)
-        if isinstance(config, dict):
-            _loader = copy.deepcopy(mock_loader)
+        if isinstance(config, (dict, ProjectConfig)):
             _loader.project_cfg = config
         return _loader
-
-    def read_mock_config(*args, **kwargs):
-        return copy.deepcopy(mock_loader.project_cfg)
 
     # patch the DLCLoader but also read_config
     with patch(
         "deeplabcut.pose_estimation_pytorch.apis.export.dlc3_data.DLCLoader",
         get_mock_loader,
     ):
-        with patch(
-            "deeplabcut.pose_estimation_pytorch.apis.export.af.read_config",
-            read_mock_config,
-        ):
-            # check no exports exist yet
-            for loader in [mock_loader, loader_diff_iter]:
-                dir_name = export.get_export_folder_name(loader)
-                filename = export.get_export_filename(loader, snapshot, detector)
-                assert not (
-                    project_dir / "exported-models-pytorch" / dir_name / filename
-                ).exists()
+        # check no exports exist yet
+        for loader in [mock_loader, loader_diff_iter]:
+            dir_name = export.get_export_folder_name(loader)
+            filename = export.get_export_filename(loader, snapshot, detector)
+            assert not (project_dir / "exported-models-pytorch" / dir_name / filename).exists()
 
-            # export data
-            export.export_model(project_dir / "config.yaml", iteration=iteration)
+        # export data
+        export.export_model(project_dir / "config.yaml", iteration=iteration)
 
-            # check the export exists for the correct iteration
-            for loader, file_should_exist in [
-                (mock_loader, False),
-                (loader_diff_iter, True),
-            ]:
-                dir_name = export.get_export_folder_name(loader)
-                filename = export.get_export_filename(loader, snapshot, detector)
-                expected = project_dir / "exported-models-pytorch" / dir_name / filename
-                expected_exists = expected.exists()
-                assert expected_exists == file_should_exist
+        # check the export exists for the correct iteration
+        for loader, file_should_exist in [
+            (mock_loader, False),
+            (loader_diff_iter, True),
+        ]:
+            dir_name = export.get_export_folder_name(loader)
+            filename = export.get_export_filename(loader, snapshot, detector)
+            expected = project_dir / "exported-models-pytorch" / dir_name / filename
+            expected_exists = expected.exists()
+            assert expected_exists == file_should_exist

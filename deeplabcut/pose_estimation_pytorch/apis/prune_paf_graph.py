@@ -36,7 +36,7 @@ def benchmark_paf_graphs(
     overwrite: bool = False,
     update_config: bool = True,
 ) -> list[dict]:
-    """Prunes the PAF graph to maximize performance
+    """Prunes the PAF graph to maximize performance.
 
     Args:
         loader: The loader for the model to prune.
@@ -69,7 +69,7 @@ def benchmark_paf_graphs(
     model.eval()
 
     if not isinstance(predictor, predictors.PartAffinityFieldPredictor):
-        raise ValueError(f"Predictor should be a PartAffinityFieldPredictor.")
+        raise ValueError("Predictor should be a PartAffinityFieldPredictor.")
 
     if verbose:
         print("-------------------------------------------------")
@@ -147,12 +147,16 @@ def benchmark_paf_graphs(
             print()
 
         # update the edges to keep in the PyTorch configuration file
-        loader.update_model_cfg(
-            {"model.heads.bodypart.predictor.edges_to_keep": best_edges}
-        )
+        loader.model_cfg.model.heads["bodypart"]["predictor"]["edges_to_keep"] = best_edges
+        loader.model_cfg.log_changes()
+        loader.model_cfg.to_yaml(loader.model_config_path)
 
         # update the edges indices
         test_config = loader.model_folder.parent / "test" / "pose_cfg.yaml"
+
+        # NOTE @deruyter92 2026-06-23: Pruned edges are persisted on loader.model_cfg
+        # (edges_to_keep). The paf_best on test/pose_cfg.yaml is a legacy field still
+        # read by PyTorch shelving/videos metadata (PAFinds).
         auxiliaryfunctions.edit_config(str(test_config), dict(paf_best=best_edges))
 
     return results
@@ -175,9 +179,7 @@ def _calc_separability(
     hist_right = hist_right / hist_right.sum()
     tpr = np.cumsum(hist_right)
     if metric == "jeffries":
-        sep = np.sqrt(
-            2 * (1 - np.sum(np.sqrt(hist_left * hist_right)))
-        )  # Jeffries-Matusita distance
+        sep = np.sqrt(2 * (1 - np.sum(np.sqrt(hist_left * hist_right))))  # Jeffries-Matusita distance
     else:
         sep = np.trapz(np.cumsum(hist_left), tpr)
     if max_sensitivity:
@@ -217,15 +219,13 @@ def compute_within_between_paf_costs(
 
         # Get animal IDs and corresponding indices in the arrays of detections
         lookup = dict()
-        for i, (coord_pred, coord_gt) in enumerate(zip(coords_pred, gt_pose)):
+        for i, (coord_pred, coord_gt) in enumerate(zip(coords_pred, gt_pose, strict=False)):
             inds = np.flatnonzero(np.all(~np.isnan(coord_pred), axis=1))
             inds_gt = np.flatnonzero(np.all(~np.isnan(coord_gt), axis=1))
             if inds.size and inds_gt.size:
-                neighbors = find_closest_neighbors(
-                    coord_gt[inds_gt], coord_pred[inds], k=3
-                )
+                neighbors = find_closest_neighbors(coord_gt[inds_gt], coord_pred[inds], k=3)
                 found = neighbors != -1
-                lookup[i] = dict(zip(inds_gt[found], inds[neighbors[found]]))
+                lookup[i] = dict(zip(inds_gt[found], inds[neighbors[found]], strict=False))
 
         for k, v in costs_pred.items():
             paf = v["m1"]
@@ -259,21 +259,16 @@ def get_n_best_paf_graphs(
     return_preds = model.heads.bodypart.predictor.return_preds
     model.heads.bodypart.predictor.return_preds = True
 
-    within_train, between_train = compute_within_between_paf_costs(
-        model, ground_truth, preprocessor, device
-    )
+    within_train, between_train = compute_within_between_paf_costs(model, ground_truth, preprocessor, device)
     existing_edges = list(set(k for k, v in within_train.items() if v))
 
     scores, _ = zip(
-        *[
-            _calc_separability(between_train[n], within_train[n], metric=metric)
-            for n in existing_edges
-        ]
+        *[_calc_separability(between_train[n], within_train[n], metric=metric) for n in existing_edges], strict=False
     )
 
     # Find minimal skeleton
     G = nx.Graph()
-    for edge, score in zip(existing_edges, scores):
+    for edge, score in zip(existing_edges, scores, strict=False):
         if np.isfinite(score):
             G.add_edge(*full_graph[edge], weight=score)
 
@@ -288,7 +283,7 @@ def get_n_best_paf_graphs(
     order = order[np.isin(order, root_edges, invert=True)]
     best_edges = [root_edges]
     for length in lengths:
-        best_edges.append(root_edges + list(order[:length]))
+        best_edges.append(root_edges + order[:length].tolist())
 
     model.heads.bodypart.predictor.return_preds = return_preds
-    return best_edges, dict(zip(existing_edges, scores))
+    return best_edges, dict(zip(existing_edges, scores, strict=False))

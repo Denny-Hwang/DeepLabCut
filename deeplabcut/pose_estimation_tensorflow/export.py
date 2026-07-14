@@ -15,13 +15,12 @@ import shutil
 import tarfile
 from pathlib import Path
 
-import numpy as np
-import ruamel.yaml
 import tensorflow as tf
 
-from deeplabcut.utils import auxiliaryfunctions
+from deeplabcut.core.config import get_yaml_loader
 from deeplabcut.pose_estimation_tensorflow.config import load_config
 from deeplabcut.pose_estimation_tensorflow.core import predict
+from deeplabcut.utils import auxiliaryfunctions
 
 
 def create_deploy_config_template():
@@ -52,37 +51,33 @@ def create_deploy_config_template():
     \n
     """
 
-    ruamelFile = ruamel.yaml.YAML()
+    ruamelFile = get_yaml_loader()
     cfg_file = ruamelFile.load(yaml_str)
     return cfg_file, ruamelFile
 
 
 def write_deploy_config(configname, cfg):
-    """
-
-    CURRENTLY NOT IMPLEMENTED
+    """CURRENTLY NOT IMPLEMENTED.
 
     Write structured config file.
     """
 
     with open(configname, "w") as cf:
-        ruamelFile = ruamel.yaml.YAML()
+        ruamelFile = get_yaml_loader()
         cfg_file, ruamelFile = create_deploy_config_template()
         for key in cfg.keys():
             cfg_file[key] = cfg[key]
 
         # Adding default value for variable skeleton and skeleton_color for backward compatibility.
-        if not "skeleton" in cfg.keys():
+        if "skeleton" not in cfg.keys():
             cfg_file["skeleton"] = []
             cfg_file["skeleton_color"] = "black"
         ruamelFile.dump(cfg_file, cf)
 
 
 def load_model(cfg, shuffle=1, trainingsetindex=0, TFGPUinference=True, modelprefix=""):
-    """
-
-    Loads a tensorflow session with a DLC model from the associated configuration
-    Return a tensorflow session with DLC model given cfg and shuffle
+    """Loads a tensorflow session with a DLC model from the associated configuration
+    Return a tensorflow session with DLC model given cfg and shuffle.
 
     Parameters:
     -----------
@@ -114,32 +109,25 @@ def load_model(cfg, shuffle=1, trainingsetindex=0, TFGPUinference=True, modelpre
     train_fraction = cfg["TrainingFraction"][trainingsetindex]
     model_folder = os.path.join(
         cfg["project_path"],
-        str(
-            auxiliaryfunctions.get_model_folder(
-                train_fraction, shuffle, cfg, modelprefix=modelprefix
-            )
-        ),
+        str(auxiliaryfunctions.get_model_folder(train_fraction, shuffle, cfg, modelprefix=modelprefix)),
     )
-    path_test_config = os.path.normpath(model_folder + "/test/pose_cfg.yaml")
+    os.path.normpath(model_folder + "/test/pose_cfg.yaml")
     path_train_config = os.path.normpath(model_folder + "/train/pose_cfg.yaml")
 
     try:
         dlc_cfg = load_config(str(path_train_config))
         # dlc_cfg_train = load_config(str(path_train_config))
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         raise FileNotFoundError(
-            "It seems the model for shuffle %s and trainFraction %s does not exist."
-            % (shuffle, train_fraction)
-        )
+            f"It seems the model for shuffle {shuffle} and trainFraction {train_fraction} does not exist."
+        ) from e
 
     Snapshots = auxiliaryfunctions.get_snapshots_from_folder(
         train_folder=Path(model_folder) / "train",
     )
 
     if cfg["snapshotindex"] == "all":
-        print(
-            "Snapshotindex is set to 'all' in the config.yaml file. Changing snapshot index to -1!"
-        )
+        print("Snapshotindex is set to 'all' in the config.yaml file. Changing snapshot index to -1!")
         snapshotindex = -1
     else:
         snapshotindex = cfg["snapshotindex"]
@@ -149,10 +137,8 @@ def load_model(cfg, shuffle=1, trainingsetindex=0, TFGPUinference=True, modelpre
     ####################################
 
     # Check if data already was generated:
-    dlc_cfg["init_weights"] = os.path.join(
-        model_folder, "train", Snapshots[snapshotindex]
-    )
-    trainingsiterations = (dlc_cfg["init_weights"].split(os.sep)[-1]).split("-")[-1]
+    dlc_cfg["init_weights"] = os.path.join(model_folder, "train", Snapshots[snapshotindex])
+    (dlc_cfg["init_weights"].split(os.sep)[-1]).split("-")[-1]
     dlc_cfg["num_outputs"] = cfg.get("num_outputs", dlc_cfg.get("num_outputs", 1))
     dlc_cfg["batch_size"] = None
 
@@ -194,9 +180,7 @@ def tf_to_pb(sess, checkpoint, output, output_dir=None):
         If None, will export to the directory of the checkpoint file.
     """
 
-    output_dir = (
-        os.path.expanduser(output_dir) if output_dir else os.path.dirname(checkpoint)
-    )
+    output_dir = os.path.expanduser(output_dir) if output_dir else os.path.dirname(checkpoint)
     ckpt_base = os.path.basename(checkpoint)
 
     # save graph to pbtxt file
@@ -226,9 +210,7 @@ def export_model(
     wipepaths=False,
     modelprefix="",
 ):
-    """
-
-    Export DeepLabCut models for the model zoo or for live inference.
+    """Export DeepLabCut models for the model zoo or for live inference.
 
     Saves the pose configuration, snapshot files, and frozen TF graph of the model to
     directory named exported-models within the project directory
@@ -279,43 +261,31 @@ def export_model(
     try:
         cfg = auxiliaryfunctions.read_config(cfg_path)
     except FileNotFoundError:
-        FileNotFoundError("The config.yaml file at %s does not exist." % cfg_path)
+        FileNotFoundError(f"The config.yaml file at {cfg_path} does not exist.")
 
     cfg["project_path"] = os.path.dirname(os.path.realpath(cfg_path))
     cfg["iteration"] = iteration if iteration is not None else cfg["iteration"]
     cfg["batch_size"] = cfg["batch_size"] if cfg["batch_size"] > 1 else 2
-    cfg["snapshotindex"] = (
-        snapshotindex if snapshotindex is not None else cfg["snapshotindex"]
-    )
+    cfg["snapshotindex"] = snapshotindex if snapshotindex is not None else cfg["snapshotindex"]
 
     ### load model
 
-    sess, input, output, dlc_cfg = load_model(
-        cfg, shuffle, trainingsetindex, TFGPUinference, modelprefix
-    )
+    sess, input, output, dlc_cfg = load_model(cfg, shuffle, trainingsetindex, TFGPUinference, modelprefix)
     ckpt = dlc_cfg["init_weights"]
-    model_dir = os.path.dirname(ckpt)
+    os.path.dirname(ckpt)
 
     ### set up export directory
 
-    export_dir = os.path.normpath(cfg["project_path"] + "/" + "exported-models")
+    export_dir = os.path.normpath(os.path.join(str(cfg["project_path"]), "exported-models"))
     if not os.path.isdir(export_dir):
         os.mkdir(export_dir)
 
-    sub_dir_name = "DLC_%s_%s_iteration-%d_shuffle-%d" % (
-        cfg["Task"],
-        dlc_cfg["net_type"],
-        cfg["iteration"],
-        shuffle,
-    )
-    full_export_dir = os.path.normpath(export_dir + "/" + sub_dir_name)
+    sub_dir_name = f"DLC_{cfg['Task']}_{dlc_cfg['net_type']}_iteration-{cfg['iteration']}_shuffle-{shuffle}"
+    full_export_dir = os.path.normpath(os.path.join(export_dir, sub_dir_name))
 
     if os.path.isdir(full_export_dir):
         if not overwrite:
-            raise FileExistsError(
-                "Export directory %s already exists. Terminating export..."
-                % full_export_dir
-            )
+            raise FileExistsError(f"Export directory {full_export_dir} already exists. Terminating export...")
     else:
         os.mkdir(full_export_dir)
 
@@ -334,17 +304,14 @@ def export_model(
             sorted_cfg[key] = value
 
     pose_cfg_file = os.path.normpath(full_export_dir + "/pose_cfg.yaml")
-    ruamel_file = ruamel.yaml.YAML()
+    ruamel_file = get_yaml_loader()
     ruamel_file.dump(sorted_cfg, open(pose_cfg_file, "w"))
 
     ### copy checkpoint to export directory
 
     ckpt_files = glob.glob(ckpt + "*")
-    ckpt_dest = [
-        os.path.normpath(full_export_dir + "/" + os.path.basename(ckf))
-        for ckf in ckpt_files
-    ]
-    for ckf, ckd in zip(ckpt_files, ckpt_dest):
+    ckpt_dest = [os.path.normpath(full_export_dir + "/" + os.path.basename(ckf)) for ckf in ckpt_files]
+    for ckf, ckd in zip(ckpt_files, ckpt_dest, strict=False):
         shutil.copy(ckf, ckd)
 
     ### create pbtxt and pb files for checkpoint in export directory

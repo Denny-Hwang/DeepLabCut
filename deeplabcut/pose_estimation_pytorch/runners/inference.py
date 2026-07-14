@@ -10,9 +10,15 @@
 #
 from __future__ import annotations
 
+import os
+import threading
+import warnings
 from abc import ABCMeta, abstractmethod
+from collections.abc import Iterable
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generic, Iterable
+from queue import Empty, Full, Queue
+from typing import Any, Generic
 
 import numpy as np
 import torch
@@ -22,6 +28,7 @@ import deeplabcut.pose_estimation_pytorch.post_processing.nms as nms
 import deeplabcut.pose_estimation_pytorch.runners.ctd as ctd
 import deeplabcut.pose_estimation_pytorch.runners.shelving as shelving
 from deeplabcut.core.inferenceutils import calc_object_keypoint_similarity
+from deeplabcut.pose_estimation_pytorch.config import InferenceConfig
 from deeplabcut.pose_estimation_pytorch.data.postprocessor import Postprocessor
 from deeplabcut.pose_estimation_pytorch.data.preprocessor import LoadImage, Preprocessor
 from deeplabcut.pose_estimation_pytorch.models.detectors import BaseDetector
@@ -33,9 +40,42 @@ from deeplabcut.pose_estimation_pytorch.runners.dynamic_cropping import (
 )
 from deeplabcut.pose_estimation_pytorch.task import Task
 
+# NOTE @deruyter92 2026-04-28: AMD GPUs with DirectML inference mode currently do not
+# support torch.inference_mode, which is stricter than torch.no_grad. The ENV
+# variable is used to conditionally use torch.no_grad instead. See PR #3295.
+_directml_no_grad: bool = os.getenv("DLC_DIRECTML_NO_GRAD", "false").lower() in (
+    "true",
+    "1",
+)
+
+
+def _inference_mode_decorator(fn):
+    """
+    Conditional decorator for inference mode, controlled by the DLC_DIRECTML_NO_GRAD ENV variable.
+    Uses @torch.no_grad if set to "true", otherwise defaults to @torch.inference_mode.
+    """
+    return torch.no_grad()(fn) if _directml_no_grad else torch.inference_mode()(fn)
+
+
+@contextmanager
+def _directml_runtime_error_hint():
+    """Context manager that augments runtime errors with a hint for DirectML-related issues."""
+    try:
+        yield
+    except RuntimeError as e:
+        if torch.is_inference_mode_enabled() and not _directml_no_grad:
+            raise RuntimeError(
+                f"{e}\n\n"
+                "If you are using an AMD GPU with DirectML, this error may be caused by "
+                "@torch.inference_mode being incompatible with the DirectML execution path. "
+                "Try setting the environment variable DLC_DIRECTML_NO_GRAD=true, "
+                "which will switch the inference context to @torch.no_grad."
+            ) from e
+        raise
+
 
 class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
-    """Base class for inference runners
+    """Base class for inference runners.
 
     A runner takes a model and runs actions on it, such as training or inference
     """
@@ -49,6 +89,7 @@ class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
         preprocessor: Preprocessor | None = None,
         postprocessor: Postprocessor | None = None,
         load_weights_only: bool | None = None,
+        inference_cfg: InferenceConfig | dict | None = None,
     ):
         """
         Args:
@@ -65,6 +106,7 @@ class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
                         https://pytorch.org/docs/stable/generated/torch.load.html
                 If None, the default value is used:
                     `deeplabcut.pose_estimation_pytorch.get_load_weights_only()`
+            inference_cfg: Configuration for the inference runner
         """
         super().__init__(model=model, device=device, snapshot_path=snapshot_path)
         if not isinstance(batch_size, int) or batch_size <= 0:
@@ -73,6 +115,15 @@ class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
         self.batch_size = batch_size
         self.preprocessor = preprocessor
         self.postprocessor = postprocessor
+
+        if isinstance(inference_cfg, InferenceConfig):
+            self.inference_cfg = inference_cfg
+        elif isinstance(inference_cfg, dict):
+            self.inference_cfg = InferenceConfig.from_dict(inference_cfg)
+        elif inference_cfg is None:
+            self.inference_cfg = InferenceConfig()
+        else:
+            raise ValueError(f"Invalid inference config: {inference_cfg}")
 
         if self.snapshot_path is not None and self.snapshot_path != "":
             self.load_snapshot(
@@ -85,18 +136,33 @@ class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
         self.model.to(self.device)
         self.model.eval()
 
-        self._batch: torch.Tensor | None = None
+        if self.inference_cfg.compile.enabled:
+            try:
+                self.model = torch.compile(self.model, backend=self.inference_cfg.compile.backend)
+            except Exception as e:
+                warnings.warn(
+                    f"torch.compile failed with backend='{self.inference_cfg.compile.backend}', "
+                    f"falling back to eager mode. Error: {e}",
+                    stacklevel=2,
+                )
+
+        self._batch_list: list[torch.Tensor] = []
         self._model_kwargs: dict[str, np.ndarray | torch.Tensor] = {}
 
         self._contexts: list[dict] = []
         self._image_batch_sizes: list[int] = []
         self._predictions: list = []
 
+        # Async-specific attributes
+        if self.inference_cfg.multithreading.enabled:
+            self._input_queue = Queue(maxsize=self.inference_cfg.multithreading.queue_length)
+            self._preprocessing_thread = None
+            self._stop_event = threading.Event()
+            self._exception = None
+
     @abstractmethod
-    def predict(
-        self, inputs: torch.Tensor, **kwargs
-    ) -> list[dict[str, dict[str, np.ndarray]]]:
-        """Makes predictions from a model input and output
+    def predict(self, inputs: torch.Tensor, **kwargs) -> list[dict[str, dict[str, np.ndarray]]]:
+        """Makes predictions from a model input and output.
 
         Args:
             the inputs to the model, of shape (batch_size, ...)
@@ -105,16 +171,13 @@ class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
             the predictions for each of the 'batch_size' inputs
         """
 
-    @torch.no_grad()
+    @_inference_mode_decorator
     def inference(
         self,
-        images: (
-            Iterable[str | Path | np.ndarray]
-            | Iterable[tuple[str | Path | np.ndarray, dict[str, Any]]]
-        ),
+        images: (Iterable[str | Path | np.ndarray] | Iterable[tuple[str | Path | np.ndarray, dict[str, Any]]]),
         shelf_writer: shelving.ShelfWriter | None = None,
     ) -> list[dict[str, np.ndarray]]:
-        """Run model inference on the given dataset
+        """Run model inference on the given dataset.
 
         TODO: Add an option to also return head outputs (such as heatmaps)? Can be
          super useful for debugging
@@ -136,6 +199,17 @@ class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
                 }
             ]
         """
+        if self.inference_cfg.multithreading.enabled:
+            return self._async_inference(images, shelf_writer)
+        else:
+            return self._sequential_inference(images, shelf_writer)
+
+    def _sequential_inference(
+        self,
+        images: (Iterable[str | Path | np.ndarray] | Iterable[tuple[str | Path | np.ndarray, dict[str, Any]]]),
+        shelf_writer: shelving.ShelfWriter | None = None,
+    ) -> list[dict[str, np.ndarray]]:
+        """Original sequential inference implementation."""
         results = []
         for data in images:
             self._prepare_inputs(data)
@@ -149,13 +223,72 @@ class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
 
         return results
 
+    def _async_inference(
+        self,
+        images: (Iterable[str | Path | np.ndarray] | Iterable[tuple[str | Path | np.ndarray, dict[str, Any]]]),
+        shelf_writer: shelving.ShelfWriter | None = None,
+    ) -> list[dict[str, np.ndarray]]:
+        """Async inference with pipeline parallelism."""
+        # Reset state
+        self._stop_event.clear()
+        self._exception = None
+        self._batch_list = []
+        self._model_kwargs = {}
+        self._contexts = []
+        self._image_batch_sizes = []
+        self._predictions = []
+
+        # Start preprocessing thread
+        self._preprocessing_thread = threading.Thread(target=self._preprocessing_worker, args=(images,))
+        self._preprocessing_thread.start()
+
+        results = []
+
+        try:
+            while True:
+                # Get next batch from queue
+                item = self._safe_get()
+
+                # None means either producer finished or stop_event triggered
+                if item is None:
+                    break
+
+                batch, model_kwargs = item
+
+                # Run model inference
+                with _directml_runtime_error_hint():
+                    predictions = self.predict(batch, **model_kwargs)
+                self._predictions.extend(predictions)
+
+                # Extract and return results
+                batch_results = self._extract_results(shelf_writer)
+                results.extend(batch_results)
+
+                # propagate any exception from the producer immediately
+                if self._exception is not None:
+                    raise self._exception
+
+        except BaseException as e:  # catches KeyboardInterrupt, SystemExit, etc.
+            # tell producer to quit
+            self._stop_event.set()
+            raise e
+        finally:
+            # Wait for preprocessing thread to finish
+            if self._preprocessing_thread is not None:
+                self._preprocessing_thread.join(timeout=self.inference_cfg.multithreading.timeout)
+
+            # Check for exceptions in preprocessing thread
+            if self._exception is not None:
+                raise self._exception
+
+        return results
+
     def _prepare_inputs(
         self,
         data: str | Path | np.ndarray | tuple[str | Path | np.ndarray, dict],
     ) -> None:
-        """
-        Prepares inputs for an image and adds them to the data ready to be processed
-        """
+        """Prepares inputs for an image and adds them to the data ready to be
+        processed."""
         if isinstance(data, (str, Path, np.ndarray)):
             inputs, context = data, {}
         else:
@@ -179,10 +312,7 @@ class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
             elif isinstance(curr_v, torch.Tensor):
                 curr_v = torch.cat([curr_v, v], dim=0)
             else:
-                raise ValueError(
-                    f"model_kwargs {k} must be a numpy array or torch tensor - "
-                    f"found '{type(v)}'."
-                )
+                raise ValueError(f"model_kwargs {k} must be a numpy array or torch tensor - found '{type(v)}'.")
             self._model_kwargs[k] = curr_v
 
         self._contexts.append(context)
@@ -192,23 +322,18 @@ class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
         if len(inputs) == 0:
             return
 
-        if self._batch is None:
-            self._batch = inputs
-        else:
-            self._batch = torch.cat([self._batch, inputs], dim=0)
+        # extend the list with individual image tensors (slice along first dim)
+        self._batch_list.extend(list(inputs))
 
     def _process_full_batches(self) -> None:
         """Processes prepared inputs in batches of the desired batch size."""
-        while self._batch is not None and len(self._batch) >= self.batch_size:
+        while len(self._batch_list) >= self.batch_size:
             self._process_batch()
 
     def _extract_results(self, shelf_writer: shelving.ShelfWriter) -> list:
         """Obtains results that were obtained from processing a batch."""
         results = []
-        while (
-            len(self._image_batch_sizes) > 0
-            and len(self._predictions) >= self._image_batch_sizes[0]
-        ):
+        while len(self._image_batch_sizes) > 0 and len(self._predictions) >= self._image_batch_sizes[0]:
             num_predictions = self._image_batch_sizes[0]
             image_predictions = self._predictions[:num_predictions]
             context = self._contexts[0]
@@ -234,34 +359,106 @@ class InferenceRunner(Runner, Generic[ModelType], metaclass=ABCMeta):
         return results
 
     def _process_batch(self) -> None:
-        """
-        Processes a batch. There must be inputs waiting to be processed before this is
-        called, otherwise this method will raise an error.
-        """
-        batch = self._batch[: self.batch_size]
-        model_kwargs = {
-            mk: v[: self.batch_size] for mk, v in self._model_kwargs.items()
-        }
+        """Processes a batch.
 
-        self._predictions += self.predict(batch, **model_kwargs)
+        There must be inputs waiting to be processed before this is called, otherwise
+        this method will raise an error.
+        """
+        batch = torch.stack(self._batch_list[: self.batch_size], dim=0)
+        model_kwargs = {mk: v[: self.batch_size] for mk, v in self._model_kwargs.items()}
 
-        # remove processed inputs from batch
-        if len(self._batch) <= self.batch_size:
-            self._batch = None
+        with _directml_runtime_error_hint():
+            self._predictions += self.predict(batch, **model_kwargs)
+
+        # remove processed inputs
+        if len(self._batch_list) <= self.batch_size:
+            self._batch_list = []
             self._model_kwargs = {}
         else:
-            self._batch = self._batch[self.batch_size :]
-            self._model_kwargs = {
-                mk: v[self.batch_size :] for mk, v in self._model_kwargs.items()
-            }
+            self._batch_list = self._batch_list[self.batch_size :]
+            self._model_kwargs = {mk: v[self.batch_size :] for mk, v in self._model_kwargs.items()}
 
     def _inputs_waiting_for_processing(self) -> bool:
         """Returns: Whether there are inputs which have not yet been processed"""
-        return self._batch is not None and len(self._batch) > 0
+        return len(self._batch_list) > 0
+
+    def _safe_put(self, item: Any) -> bool:
+        """Put item in the queue, retrying until successful or stop_event is set."""
+        while not self._stop_event.is_set():
+            try:
+                self._input_queue.put(item, timeout=1.0)
+                return True
+            except Full:
+                continue
+        return False
+
+    def _safe_get(self) -> Any:
+        """Get the next item from the queue safely, retrying until successful or
+        stop_event is set.
+
+        Returns:
+            The item from the queue, or None if the producer is dead or stop_signal is raised and queue empty.
+        """
+        while True:
+            try:
+                item = self._input_queue.get(timeout=1.0)
+                return item
+            except Empty:
+                # check if producer is still running
+                if (
+                    self._stop_event.is_set()
+                    or self._preprocessing_thread is None
+                    or not self._preprocessing_thread.is_alive()
+                ):
+                    return None
+                continue
+
+    def _preprocessing_worker(self, images: Iterable) -> None:
+        """Background worker that prepares inputs and puts them in the input queue."""
+        try:
+            for data in images:
+                if self._stop_event.is_set():
+                    break
+
+                # Prepare inputs using the parent class method
+                self._prepare_inputs(data)
+
+                # Process full batches and put them in the queue
+                while len(self._batch_list) >= self.batch_size:
+                    batch = torch.stack(self._batch_list[: self.batch_size], dim=0)
+                    model_kwargs = {mk: v[: self.batch_size] for mk, v in self._model_kwargs.items()}
+
+                    self._safe_put((batch, model_kwargs))
+
+                    # Remove processed inputs from batch
+                    if len(self._batch_list) <= self.batch_size:
+                        self._batch_list, self._model_kwargs = [], {}
+                    else:
+                        self._batch_list = self._batch_list[self.batch_size :]
+                        self._model_kwargs = {mk: v[self.batch_size :] for mk, v in self._model_kwargs.items()}
+
+            # Process any remaining inputs
+            if len(self._batch_list) > 0:
+                batch = torch.stack(self._batch_list, dim=0)
+                self._safe_put((batch, self._model_kwargs))
+
+        except BaseException as e:  # catches KeyboardInterrupt, SystemExit, etc.
+            self._exception = e
+            self._stop_event.set()
+        finally:
+            # Signal that preprocessing is done
+            self._safe_put(None)
+
+    def __del__(self):
+        """Cleanup method to ensure threads are stopped."""
+        if hasattr(self, "_stop_event"):
+            self._stop_event.set()
+        if hasattr(self, "_preprocessing_thread") and self._preprocessing_thread is not None:
+            self._preprocessing_thread.join(timeout=1.0)
 
 
 class PoseInferenceRunner(InferenceRunner[PoseModel]):
-    """Runner for pose estimation inference"""
+    """Runner for pose estimation inference."""
 
     def __init__(
         self,
@@ -272,15 +469,10 @@ class PoseInferenceRunner(InferenceRunner[PoseModel]):
         super().__init__(model, **kwargs)
         self.dynamic = dynamic
         if dynamic is not None and self.batch_size != 1:
-            raise ValueError(
-                "Dynamic cropping can only be used with batch size 1. Please set "
-                "your batch size to 1."
-            )
+            raise ValueError("Dynamic cropping can only be used with batch size 1. Please set your batch size to 1.")
 
-    def predict(
-        self, inputs: torch.Tensor, **kwargs
-    ) -> list[dict[str, dict[str, np.ndarray]]]:
-        """Makes predictions from a model input and output
+    def predict(self, inputs: torch.Tensor, **kwargs) -> list[dict[str, dict[str, np.ndarray]]]:
+        """Makes predictions from a model input and output.
 
         Args:
             the inputs to the model, of shape (batch_size, ...)
@@ -298,21 +490,20 @@ class PoseInferenceRunner(InferenceRunner[PoseModel]):
         if self.dynamic is not None:
             # dynamic cropping can use patches
             inputs = self.dynamic.crop(inputs)
-
-        outputs = self.model(inputs.to(self.device), **kwargs)
-        raw_predictions = self.model.get_predictions(outputs)
+        if self.inference_cfg.autocast.enabled:
+            with torch.autocast(device_type=str(self.device)):
+                outputs = self.model(inputs.to(self.device), **kwargs)
+                raw_predictions = self.model.get_predictions(outputs)
+        else:
+            outputs = self.model(inputs.to(self.device), **kwargs)
+            raw_predictions = self.model.get_predictions(outputs)
 
         if self.dynamic is not None:
-            raw_predictions["bodypart"]["poses"] = self.dynamic.update(
-                raw_predictions["bodypart"]["poses"]
-            )
+            raw_predictions["bodypart"]["poses"] = self.dynamic.update(raw_predictions["bodypart"]["poses"])
 
         predictions = [
             {
-                head: {
-                    pred_name: pred[b].cpu().numpy()
-                    for pred_name, pred in head_outputs.items()
-                }
+                head: {pred_name: pred[b].cpu().numpy() for pred_name, pred in head_outputs.items()}
                 for head, head_outputs in raw_predictions.items()
             }
             for b in range(batch_size)
@@ -321,7 +512,7 @@ class PoseInferenceRunner(InferenceRunner[PoseModel]):
 
 
 class CTDInferenceRunner(PoseInferenceRunner):
-    """Runner for pose estimation inference
+    """Runner for pose estimation inference.
 
     Args:
         model: The CTD model to run inference with.
@@ -360,18 +551,15 @@ class CTDInferenceRunner(PoseInferenceRunner):
         self._missing_idvs = False
         self._prev_pose = None
         self._idx_to_id = None
-        self._ctd_track_ages = None   # the age of each CTD tracklet
+        self._ctd_track_ages = None  # the age of each CTD tracklet
 
-    @torch.no_grad()
+    @_inference_mode_decorator
     def inference(
         self,
-        images: (
-            Iterable[str | Path | np.ndarray]
-            | Iterable[tuple[str | Path | np.ndarray, dict[str, Any]]]
-        ),
+        images: (Iterable[str | Path | np.ndarray] | Iterable[tuple[str | Path | np.ndarray, dict[str, Any]]]),
         shelf_writer: shelving.ShelfWriter | None = None,
     ) -> list[dict[str, np.ndarray]]:
-        """Run CTD model inference on the given dataset
+        """Run CTD model inference on the given dataset.
 
         Args:
             images: the images to run inference on, optionally with context
@@ -407,10 +595,8 @@ class CTDInferenceRunner(PoseInferenceRunner):
 
         return results
 
-    def predict(
-        self, inputs: torch.Tensor, **kwargs
-    ) -> list[dict[str, dict[str, np.ndarray]]]:
-        """Makes predictions from a model input and output
+    def predict(self, inputs: torch.Tensor, **kwargs) -> list[dict[str, dict[str, np.ndarray]]]:
+        """Makes predictions from a model input and output.
 
         Args:
             the inputs to the model, of shape (batch_size, ...)
@@ -424,14 +610,23 @@ class CTDInferenceRunner(PoseInferenceRunner):
                 }
             ]
         """
-        outputs = self.model(inputs.to(self.device), **kwargs)
-        raw_predictions = self.model.get_predictions(outputs)
+        cond_kpts = kwargs.get("cond_kpts", None)
+        if cond_kpts is not None and cond_kpts.shape[0] == 0:
+            # No conditions, so just return an empty prediction list
+            return []
+
+        # Normal prediction path
+        if self.inference_cfg.autocast.enabled:
+            with torch.autocast(device_type=str(self.device)):
+                outputs = self.model(inputs.to(self.device), **kwargs)
+                raw_predictions = self.model.get_predictions(outputs)
+        else:
+            outputs = self.model(inputs.to(self.device), **kwargs)
+            raw_predictions = self.model.get_predictions(outputs)
+
         predictions = [
             {
-                head: {
-                    pred_name: pred[b].cpu().numpy()
-                    for pred_name, pred in head_outputs.items()
-                }
+                head: {pred_name: pred[b].cpu().numpy() for pred_name, pred in head_outputs.items()}
                 for head, head_outputs in raw_predictions.items()
             }
             for b in range(len(inputs))
@@ -462,7 +657,8 @@ class CTDInferenceRunner(PoseInferenceRunner):
             inputs = torch.as_tensor(image)
 
         # Get and post-process the predictions
-        predictions = self.bu_runner.predict(inputs)
+        with _directml_runtime_error_hint():
+            predictions = self.bu_runner.predict(inputs)
         if self.bu_runner.postprocessor is not None:
             predictions, context = self.bu_runner.postprocessor(predictions, context)
 
@@ -478,17 +674,15 @@ class CTDInferenceRunner(PoseInferenceRunner):
 
     def _ctd_tracking_inference(
         self,
-        images: (
-            Iterable[str | Path | np.ndarray]
-            | Iterable[tuple[str | Path | np.ndarray, dict[str, Any]]]
-        ),
+        images: (Iterable[str | Path | np.ndarray] | Iterable[tuple[str | Path | np.ndarray, dict[str, Any]]]),
         shelf_writer: shelving.ShelfWriter | None = None,
     ) -> list[dict[str, np.ndarray]]:
         results = []
         for data in images:
             inputs, context = self._prepare_ctd_inputs(data)
             model_kwargs = context.pop("model_kwargs", {})
-            predictions = self.predict(inputs, **model_kwargs)
+            with _directml_runtime_error_hint():
+                predictions = self.predict(inputs, **model_kwargs)
             if self.postprocessor is not None:
                 # Pop the "cond_kpts" from the context so there's no re-scoring
                 # This is required when tracking with CTD, otherwise scores go to 0
@@ -517,15 +711,8 @@ class CTDInferenceRunner(PoseInferenceRunner):
         self._bu_age += 1
         if (
             self._prev_pose is None
-            or (
-                self._missing_idvs
-                and self.tracking.bu_on_lost_idv
-                and self._bu_age >= self.tracking.bu_max_frequency
-            )
-            or (
-                self.tracking.bu_min_frequency is not None
-                and self._bu_age >= self.tracking.bu_min_frequency
-            )
+            or (self._missing_idvs and self.tracking.bu_on_lost_idv and self._bu_age >= self.tracking.bu_max_frequency)
+            or (self.tracking.bu_min_frequency is not None and self._bu_age >= self.tracking.bu_min_frequency)
         ):
             self._bu_age = 0
             inputs, context = self.add_conditions(data)
@@ -548,9 +735,14 @@ class CTDInferenceRunner(PoseInferenceRunner):
         return inputs, context
 
     def _ctd_tracking_postprocess(
-        self, predictions: dict[str, np.ndarray], image_size: tuple[int, int],
+        self,
+        predictions: dict[str, np.ndarray],
+        image_size: tuple[int, int],
     ) -> None:
-        """Post-processes predictions. In-place changes to the predictions dict."""
+        """Post-processes predictions.
+
+        In-place changes to the predictions dict.
+        """
         # reorder the previous poses so the indices match the track IDs
         if self._idx_to_id is not None:
             predictions["bodyparts"] = predictions["bodyparts"][self._idx_to_id]
@@ -612,9 +804,8 @@ class CTDInferenceRunner(PoseInferenceRunner):
             self._idx_ages = None
 
     def _merge_conditions(self, bu_cond: np.ndarray) -> np.ndarray:
-        """
-        Merges conditions made by a BU model with existing conditions from CTD tracking.
-        """
+        """Merges conditions made by a BU model with existing conditions from CTD
+        tracking."""
         # prepare the BU conditions for matching
         bu_cond = bu_cond.copy()[:, :, :3]
         # mask low-quality keypoints
@@ -636,16 +827,14 @@ class CTDInferenceRunner(PoseInferenceRunner):
             for ctd_pose in self._prev_pose:
                 best_oks = max(
                     best_oks,
-                    calc_object_keypoint_similarity(bu_pose, ctd_pose, sigma=0.1)
+                    calc_object_keypoint_similarity(bu_pose, ctd_pose, sigma=0.1),
                 )
 
             if best_oks < self.tracking.threshold_bu_add:
                 new_conditions.append((best_oks, bu_pose))
 
         # add the conditions with the lowest OKS score
-        new_conditions = [
-            c[1] for c in sorted(new_conditions, key=lambda x: x[0])
-        ]
+        new_conditions = [c[1] for c in sorted(new_conditions, key=lambda x: x[0])]
 
         # if there are no new conditions,
         if len(new_conditions) == 0:
@@ -653,11 +842,11 @@ class CTDInferenceRunner(PoseInferenceRunner):
 
         new_conditions = np.stack(new_conditions, axis=0)
         cond_pose = np.concatenate([self._prev_pose, new_conditions], axis=0)
-        return cond_pose[:len(self._idx_to_id)]
+        return cond_pose[: len(self._idx_to_id)]
 
 
 class DetectorInferenceRunner(InferenceRunner[BaseDetector]):
-    """Runner for object detection inference"""
+    """Runner for object detection inference."""
 
     def __init__(self, model: BaseDetector, **kwargs):
         """
@@ -667,10 +856,8 @@ class DetectorInferenceRunner(InferenceRunner[BaseDetector]):
         """
         super().__init__(model, **kwargs)
 
-    def predict(
-        self, inputs: torch.Tensor, **kwargs
-    ) -> list[dict[str, dict[str, np.ndarray]]]:
-        """Makes predictions from a model input and output
+    def predict(self, inputs: torch.Tensor, **kwargs) -> list[dict[str, dict[str, np.ndarray]]]:
+        """Makes predictions from a model input and output.
 
         Args:
             the inputs to the model, of shape (batch_size, ...)
@@ -681,9 +868,14 @@ class DetectorInferenceRunner(InferenceRunner[BaseDetector]):
                 {
                     "bodypart": {"poses": np.ndarray},
                     "unique_bodypart": "poses": np.ndarray},
+                }
             ]
         """
-        _, raw_predictions = self.model(inputs.to(self.device))
+        if self.inference_cfg.autocast.enabled:
+            with torch.autocast(device_type=str(self.device)):
+                _, raw_predictions = self.model(inputs.to(self.device))
+        else:
+            _, raw_predictions = self.model(inputs.to(self.device))
         predictions = [
             {
                 "detection": {
@@ -706,10 +898,10 @@ def build_inference_runner(
     postprocessor: Postprocessor | None = None,
     dynamic: DynamicCropper | None = None,
     load_weights_only: bool | None = None,
+    inference_cfg: InferenceConfig | dict | None = None,
     **kwargs,
 ) -> InferenceRunner:
-    """
-    Build a runner object according to a pytorch configuration file
+    """Build a runner object according to a pytorch configuration file.
 
     Args:
         task: the inference task to run
@@ -730,6 +922,7 @@ def build_inference_runner(
                 https://pytorch.org/docs/stable/generated/torch.load.html
             If None, the default value is used:
                 `deeplabcut.pose_estimation_pytorch.get_load_weights_only()`
+        inference_cfg: Configuration for the inference runner
         **kwargs: Other arguments for the InferenceRunner.
 
     Returns:
@@ -743,13 +936,15 @@ def build_inference_runner(
         preprocessor=preprocessor,
         postprocessor=postprocessor,
         load_weights_only=load_weights_only,
+        inference_cfg=inference_cfg,
         **kwargs,
     )
+
     if task == Task.DETECT:
         if dynamic is not None:
             raise ValueError(
-                f"The DynamicCropper can only be used for pose estimation; not object "
-                f"detection. Please turn off dynamic cropping."
+                "The DynamicCropper can only be used for pose estimation; not object "
+                "detection. Please turn off dynamic cropping."
             )
         return DetectorInferenceRunner(**kwargs)
 

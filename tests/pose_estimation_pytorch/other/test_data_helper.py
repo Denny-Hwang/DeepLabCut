@@ -11,15 +11,15 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import patch, Mock
+from unittest.mock import Mock, patch
 from zipfile import Path
 
 import numpy as np
 import pytest
 
+from deeplabcut.generate_training_dataset import create_training_dataset
 from deeplabcut.pose_estimation_pytorch.data.dlcloader import DLCLoader
 from deeplabcut.pose_estimation_pytorch.data.utils import merge_list_of_dicts
-from deeplabcut.generate_training_dataset import create_training_dataset
 
 
 def mock_aux() -> Mock:
@@ -36,7 +36,7 @@ def _get_loader(project_root):
     return DLCLoader(Path(project_root) / "config.yaml", shuffle=1)
 
 
-@pytest.mark.skip
+@pytest.mark.skip(reason="This behaviour is not implemented yet")
 @pytest.mark.parametrize("repo_path", ["/home/anastasiia/DLCdev"])
 def test_propertymeta_project(repo_path):
     project_root = os.path.join(repo_path, "examples", "openfield-Pranav-2018-10-30")
@@ -46,7 +46,7 @@ def test_propertymeta_project(repo_path):
         print(prop, getattr(dlc_loader, prop))
 
 
-@pytest.mark.skip
+@pytest.mark.skip(reason="This behaviour is not implemented yet")
 @pytest.mark.parametrize(
     "repo_path, mode",
     [("/home/anastasiia/DLCdev", "train"), ("/home/anastasiia/DLCdev", "test")],

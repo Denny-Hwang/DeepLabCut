@@ -14,16 +14,20 @@ import copy
 import logging
 import pickle
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import albumentations as A
 import numpy as np
 import pandas as pd
+import torch
 from tqdm import tqdm
 
 import deeplabcut.pose_estimation_pytorch.apis.utils as utils
 import deeplabcut.pose_estimation_pytorch.runners.shelving as shelving
+from deeplabcut.core.config import ProjectConfig
+from deeplabcut.core.deprecation import renamed_parameter
 from deeplabcut.pose_estimation_pytorch.apis.ctd import (
     get_condition_provider,
     get_conditions_provider_for_video,
@@ -31,6 +35,7 @@ from deeplabcut.pose_estimation_pytorch.apis.ctd import (
 from deeplabcut.pose_estimation_pytorch.apis.tracklets import (
     convert_detections2tracklets,
 )
+from deeplabcut.pose_estimation_pytorch.config.pose import PoseConfig
 from deeplabcut.pose_estimation_pytorch.data import DLCLoader
 from deeplabcut.pose_estimation_pytorch.data.ctd import CondFromModel
 from deeplabcut.pose_estimation_pytorch.runners import (
@@ -39,13 +44,15 @@ from deeplabcut.pose_estimation_pytorch.runners import (
     InferenceRunner,
     TopDownDynamicCropper,
 )
+from deeplabcut.pose_estimation_pytorch.runners.inference import InferenceConfig
 from deeplabcut.pose_estimation_pytorch.task import Task
 from deeplabcut.refine_training_dataset.stitch import stitch_tracklets
-from deeplabcut.utils import auxiliaryfunctions, VideoReader
+from deeplabcut.utils import VideoReader, auxiliaryfunctions
+from deeplabcut.utils.auxfun_videos import collect_video_paths
 
 
 class VideoIterator(VideoReader):
-    """A class to iterate over videos, with possible added context"""
+    """A class to iterate over videos, with possible added context."""
 
     def __init__(
         self,
@@ -104,6 +111,20 @@ class VideoIterator(VideoReader):
         return frame, context
 
 
+class GpuTqdm(tqdm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cuda_available = torch.cuda.is_available()
+
+    def __iter__(self):
+        for obj in super().__iter__():
+            if self._cuda_available:
+                used = torch.cuda.memory_reserved() / 1024**2
+                total = torch.cuda.get_device_properties(0).total_memory / 1024**2
+                self.set_postfix({"GPU": f"{used:.1f}/{total:.1f} MiB"})
+            yield obj
+
+
 def video_inference(
     video: str | Path | VideoIterator,
     pose_runner: InferenceRunner,
@@ -111,8 +132,9 @@ def video_inference(
     cropping: list[int] | None = None,
     shelf_writer: shelving.ShelfWriter | None = None,
     robust_nframes: bool = False,
+    show_gpu_memory: bool = False,
 ) -> list[dict[str, np.ndarray]]:
-    """Runs inference on a video
+    """Runs inference on a video.
 
     Args:
         video: The video to analyze
@@ -132,6 +154,8 @@ def video_inference(
         robust_nframes: Evaluate a video's number of frames in a robust manner. This
             option is slower (as the whole video is read frame-by-frame), but does not
             rely on metadata, hence its robustness against file corruption.
+        show_gpu_memory: When true, the tqdm progress bar shows the gpu memory usage
+            of the current process.
 
     Returns:
         Predictions for each frame in the video. If a shelf_manager is given, this list
@@ -194,14 +218,16 @@ def video_inference(
 
     if detector_runner is not None:
         print(f"Running detector with batch size {detector_runner.batch_size}")
-        bbox_predictions = detector_runner.inference(images=tqdm(video))
+        bbox_predictions = detector_runner.inference(images=GpuTqdm(video) if show_gpu_memory else tqdm(video))
         video.set_context(bbox_predictions)
 
     print(f"Running pose prediction with batch size {pose_runner.batch_size}")
     if shelf_writer is not None:
         shelf_writer.open()
 
-    predictions = pose_runner.inference(images=tqdm(video), shelf_writer=shelf_writer)
+    predictions = pose_runner.inference(
+        images=GpuTqdm(video) if show_gpu_memory else tqdm(video), shelf_writer=shelf_writer
+    )
     if shelf_writer is not None:
         shelf_writer.close()
 
@@ -218,10 +244,11 @@ def video_inference(
     return predictions
 
 
+@renamed_parameter(old="videotype", new="video_extensions", since="3.0.0")
 def analyze_videos(
     config: str,
     videos: str | list[str],
-    videotype: str | None = None,
+    video_extensions: str | Sequence[str] | None = None,
     shuffle: int = 1,
     trainingsetindex: int = 0,
     save_as_csv: bool = False,
@@ -248,6 +275,8 @@ def analyze_videos(
     overwrite: bool = False,
     cropping: list[int] | None = None,
     save_as_df: bool = False,
+    show_gpu_memory: bool = False,
+    inference_cfg: InferenceConfig | dict | None = None,
 ) -> str:
     """Makes prediction based on a trained network.
 
@@ -259,9 +288,13 @@ def analyze_videos(
         videos: a str (or list of strings) containing the full paths to videos for
             analysis or a path to the directory, where all the videos with same
             extension are stored.
-        videotype: checks for the extension of the video in case the input to the video
-            is a directory. Only videos with this extension are analyzed. If left
-            unspecified, keeps videos with extensions ('avi', 'mp4', 'mov', 'mpeg', 'mkv').
+        video_extensions: Controls how ``videos`` are filtered, based on file extension.
+            File paths and directory contents are treated differently:
+            - ``None`` (default): file paths are accepted as-is; directories are
+              scanned for files with a recognized video extension.
+            - ``str`` or ``Sequence[str]`` (e.g. ``"mp4"`` or ``["mp4", "avi"]``):
+              both file paths and directory contents are filtered by the given
+              extension(s).
         shuffle: An integer specifying the shuffle index of the training dataset used for
             training the network.
         trainingsetindex: Integer specifying which TrainingsetFraction to use.
@@ -295,7 +328,7 @@ def analyze_videos(
             animal).
         ctd_conditions: Only for CTD models. If None, the configuration for the
             condition provider will be loaded from the pytorch_config file (under the
-            "data": "conditions"). If the ctd_conditions is given as a dict, creates a
+            "inference": "conditions"). If the ctd_conditions is given as a dict, creates a
             CondFromModel from the dict. Otherwise, a CondFromModel can be given
             directly. Example configuration:
                 ```
@@ -376,6 +409,10 @@ def analyze_videos(
             predictions (before tracking results) to an H5 file containing a pandas
             DataFrame. If ``save_as_csv==True`` than the full predictions will also be
             saved in a CSV file.
+        show_gpu_memory: When true, the tqdm progress bar shows the gpu memory usage
+            of the current process.
+        inference_cfg: InferenceConfig to use
+            If None, the configuration from the `pytorch_cfg.yaml` will be used
 
     Returns:
         The scorer used to analyze the videos
@@ -396,7 +433,10 @@ def analyze_videos(
     pose_cfg = auxiliaryfunctions.read_plainconfig(pose_cfg_path)
 
     snapshot_index, detector_snapshot_index = utils.parse_snapshot_index_for_analysis(
-        loader.project_cfg, loader.model_cfg, snapshot_index, detector_snapshot_index,
+        loader.project_cfg,
+        loader.model_cfg,
+        snapshot_index,
+        detector_snapshot_index,
     )
 
     if cropping is None and loader.project_cfg.get("cropping", False):
@@ -424,8 +464,7 @@ def analyze_videos(
         save_as_df = True
         if use_shelve:
             print(
-                "The ``use_shelve`` parameter cannot be used for single animal "
-                "projects. Setting ``use_shelve=False``."
+                "The ``use_shelve`` parameter cannot be used for single animal projects. Setting ``use_shelve=False``."
             )
             use_shelve = False
 
@@ -449,25 +488,26 @@ def analyze_videos(
         print(f"Creating a TopDownDynamicCropper with configuration {top_down_dynamic}")
         dynamic = TopDownDynamicCropper(**top_down_dynamic)
 
-    snapshot = utils.get_model_snapshots(
-        snapshot_index, loader.model_folder, loader.pose_task
-    )[0]
+    snapshot = utils.get_model_snapshots(snapshot_index, loader.model_folder, loader.pose_task)[0]
 
     # Load the BU model for the conditions provider
     cond_provider = None
     if loader.pose_task == Task.COND_TOP_DOWN:
         if ctd_conditions is None:
             cond_provider = get_condition_provider(
-                condition_cfg=loader.model_cfg["data"]["conditions"],
+                condition_cfg=loader.model_cfg["inference"]["conditions"],
                 config=config,
             )
+        # TODO @deruyter92: decide on typed / plain dict
         elif isinstance(ctd_conditions, dict):
             cond_provider = get_condition_provider(
-                condition_cfg=ctd_conditions, config=config,
+                condition_cfg=ctd_conditions,
+                config=config,
             )
         else:
             cond_provider = ctd_conditions
 
+    # TODO @deruyter92: decide on typed / plain dict
     if isinstance(ctd_tracking, dict):
         # FIXME(niels) - add video FPS setting
         ctd_tracking = CTDTrackingConfig.build(ctd_tracking)
@@ -482,10 +522,11 @@ def analyze_videos(
         dynamic=dynamic,
         cond_provider=cond_provider,
         ctd_tracking=ctd_tracking,
+        inference_cfg=inference_cfg,
     )
 
     detector_runner = None
-    detector_path, detector_snapshot = None, None
+    _detector_path, detector_snapshot = None, None
     if loader.pose_task == Task.TOP_DOWN and dynamic is None:
         if detector_snapshot_index is None:
             raise ValueError(
@@ -497,21 +538,23 @@ def analyze_videos(
         if detector_batch_size is None:
             detector_batch_size = loader.project_cfg.get("detector_batch_size", 1)
 
-        detector_snapshot = utils.get_model_snapshots(
-            detector_snapshot_index, loader.model_folder, Task.DETECT
-        )[0]
+        detector_snapshot = utils.get_model_snapshots(detector_snapshot_index, loader.model_folder, Task.DETECT)[0]
         print(f"  -> Using detector {detector_snapshot.path}")
         detector_runner = utils.get_detector_inference_runner(
             model_config=loader.model_cfg,
             snapshot_path=detector_snapshot.path,
             max_individuals=max_num_animals,
             batch_size=detector_batch_size,
+            inference_cfg=inference_cfg,
         )
 
     dlc_scorer = loader.scorer(snapshot, detector_snapshot)
+    print(f"Using scorer: {dlc_scorer}")
 
     # Reading video and init variables
-    videos = utils.list_videos_in_folder(videos, videotype, shuffle=in_random_order)
+    videos = collect_video_paths(videos, extensions=video_extensions, shuffle=in_random_order)
+    h5_files_created = False  # Track if any .h5 files were created
+
     for video in videos:
         if destfolder is None:
             output_path = video.parent
@@ -548,6 +591,7 @@ def analyze_videos(
                 detector_runner=detector_runner,
                 shelf_writer=shelf_writer,
                 robust_nframes=robust_nframes,
+                show_gpu_memory=show_gpu_memory,
             )
             runtime.append(time.time())
             metadata = _generate_metadata(
@@ -583,6 +627,7 @@ def analyze_videos(
                         output_prefix=output_prefix,
                         save_as_csv=save_as_csv,
                     )
+                    h5_files_created = True  # .h5 file was created
 
             if multi_animal:
                 assemblies_path = output_path / f"{output_prefix}_assemblies.pickle"
@@ -631,37 +676,49 @@ def analyze_videos(
                         output_prefix=output_prefix + "_ctd",
                         save_as_csv=save_as_csv,
                     )
+                    h5_files_created = True  # .h5 file was created for CTD tracking
 
                 elif auto_track:
                     convert_detections2tracklets(
                         config=config,
                         videos=str(video),
-                        videotype=videotype,
+                        video_extensions=video_extensions,
                         shuffle=shuffle,
                         trainingsetindex=trainingsetindex,
                         overwrite=False,
                         identity_only=identity_only,
                         destfolder=str(output_path),
+                        snapshot_index=snapshot_index,
+                        detector_snapshot_index=detector_snapshot_index,
                     )
                     stitch_tracklets(
                         config,
                         [str(video)],
-                        videotype,
+                        video_extensions,
                         shuffle,
                         trainingsetindex,
                         n_tracks=n_tracks,
                         animal_names=animal_names,
                         destfolder=str(output_path),
                         save_as_csv=save_as_csv,
+                        snapshot_index=snapshot_index,
+                        detector_snapshot_index=detector_snapshot_index,
                     )
+                    h5_files_created = True  # .h5 file was created by stitch_tracklets
 
-    print(
-        "The videos are analyzed. Now your research can truly start!\n"
-        "You can create labeled videos with 'create_labeled_video'.\n"
-        "If the tracking is not satisfactory for some videos, consider expanding the "
-        "training set. You can use the function 'extract_outlier_frames' to extract a "
-        "few representative outlier frames.\n"
-    )
+    if h5_files_created:
+        print(
+            "The videos are analyzed. Now your research can truly start!\n"
+            "You can create labeled videos with 'create_labeled_video'.\n"
+            "If the tracking is not satisfactory for some videos, consider expanding the "
+            "training set. You can use the function 'extract_outlier_frames' to extract a "
+            "few representative outlier frames.\n"
+        )
+    else:
+        print(
+            "No .h5 files were created during video analysis. Please check your code and "
+            "ensure that the video inference and output generation are correct.\n"
+        )
 
     return dlc_scorer
 
@@ -725,7 +782,7 @@ def _generate_assemblies_file(
     num_bodyparts: int,
     num_unique_bodyparts: int,
 ) -> None:
-    """Generates the assemblies file from predictions"""
+    """Generates the assemblies file from predictions."""
     if full_data_path.exists():
         with open(full_data_path, "rb") as f:
             data = pickle.load(f)
@@ -786,21 +843,19 @@ def _generate_assemblies_file(
 
 
 def _validate_destfolder(destfolder: str | None) -> None:
-    """Checks that the destfolder for video analysis is valid"""
+    """Checks that the destfolder for video analysis is valid."""
     if destfolder is not None and destfolder != "":
         output_folder = Path(destfolder)
         if not output_folder.exists():
             print(f"Creating the output folder {output_folder}")
             output_folder.mkdir(parents=True)
 
-        assert Path(
-            output_folder
-        ).is_dir(), f"Output folder must be a directory: you passed '{output_folder}'"
+        assert Path(output_folder).is_dir(), f"Output folder must be a directory: you passed '{output_folder}'"
 
 
 def _generate_metadata(
-    cfg: dict,
-    pytorch_config: dict,
+    cfg: ProjectConfig,
+    pytorch_config: PoseConfig,
     dlc_scorer: str,
     train_fraction: int,
     batch_size: int,
@@ -815,8 +870,7 @@ def _generate_metadata(
     else:
         if not len(cropping) == 4:
             raise ValueError(
-                "The cropping parameters should be exactly 4 values: [x_min, x_max, "
-                f"y_min, y_max]. Found {cropping}"
+                f"The cropping parameters should be exactly 4 values: [x_min, x_max, y_min, y_max]. Found {cropping}"
             )
         cropping_parameters = cropping
 
@@ -825,7 +879,7 @@ def _generate_metadata(
         "stop": runtime[1],
         "run_duration": runtime[1] - runtime[0],
         "Scorer": dlc_scorer,
-        "pytorch-config": pytorch_config,
+        "pytorch-config": pytorch_config.to_dict(),
         "fps": video.fps,
         "batch_size": batch_size,
         "frame_dimensions": (w, h),
@@ -857,10 +911,7 @@ def _generate_output_data(
                 np.arange(len(pose_config.get("partaffinityfield_graph", []))),
             ),
             "all_joints": [[i] for i in range(len(pose_config["all_joints"]))],
-            "all_joints_names": [
-                pose_config["all_joints_names"][i]
-                for i in range(len(pose_config["all_joints"]))
-            ],
+            "all_joints_names": [pose_config["all_joints_names"][i] for i in range(len(pose_config["all_joints"]))],
             "nframes": len(predictions),
             "key_str_width": str_width,
         }
@@ -904,8 +955,6 @@ def _generate_output_data(
             if num_unique > 0:
                 # needed for create_video_with_all_detections to display unique bpts
                 num_assem, num_ind = id_scores.shape[1:]
-                output[key]["identity"] += [
-                    -1 * np.ones((num_assem, num_ind)) for i in range(num_unique)
-                ]
+                output[key]["identity"] += [-1 * np.ones((num_assem, num_ind)) for i in range(num_unique)]
 
     return output

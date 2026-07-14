@@ -1,36 +1,32 @@
 # DeepLabCut Dockerfiles
 
-**Note that this README is mainly intended for DeepLabCut developers. The main documentation contains its own user documentation on the provided docker images.**
+**Note that this README is mainly intended for DeepLabCut developers. The main
+documentation contains its own user documentation on the provided docker images.**
 
 This repo contains build routines for the following official DeepLabCut docker images:
-- `deeplabcut/deeplabcut:base`: Base image with TF2.5, cuDNN8 and DLC
-- `deeplabcut/deeplabcut:latest-core`: DLC in light mode
-- `deeplabcut/deeplabcut:latest-gui`: DLC in GUI mode
-- `deeplabcut/deeplabcut:latest-gui-jupyter`: DLC in GUI mode, with jupyter installed
+- `deeplabcut/deeplabcut:latest` — default runtime image (same as the former “core” image)
+- `deeplabcut/deeplabcut:latest-jupyter` — Jupyter Notebook server
+- `deeplabcut/deeplabcut:${DLC_VERSION}-core-cuda${CUDA_VERSION}` and `...-jupyter-cuda...` — versioned tags
 
-All images are based on Python 3.8.
+All images come with Python 3.11 installed.
 The images are synced to DockerHub: https://hub.docker.com/r/deeplabcut/deeplabcut
 
 ## Quickstart
 
-You can use the images fully standalone, without the need of cloning the DeepLabCut repo.
-A helper package called `deeplabcut-docker` is available on PyPI and can be installed by running
+### `deeplabcut-docker`
 
-``` bash
+You can use the images fully standalone, without the need of cloning the DeepLabCut
+repo. A helper package called `deeplabcut-docker` is available on PyPI and can be
+installed by running:
+
+```bash
 pip install deeplabcut-docker
 ```
 
-*Note: Advanced users can also directly download and use the `deeplabcut-docker.sh` script if this is preferred over a python helper script.*
+We provide docker containers for two different use cases outlined below. In both cases,
+your current directory will be mounted in the container, and the container will be
+started with your current username and group.
 
-We provide docker containers for three different use cases outlined below.
-
-In all cases, your current directory will be mounted in the container, and the container
-will be started with your current username and group.
-
-- To launch the DLC GUI directly, run
-  ```bash
-  deeplabcut-docker gui
-  ```
 - Interactive console with DLC in light mode
   ```bash
   deeplabcut-docker bash
@@ -40,46 +36,164 @@ will be started with your current username and group.
   deeplabcut-docker notebook
   ```
 
+You can pass `docker run` arguments to `deeplabcut-docker` directly. So if you have GPUs
+and want them to be available in your Docker container, call:
+
+```bash
+deeplabcut-docker bash --gpus all
+```
+
+If you want to mount other volumes to your container, you can do so with the [`-v`
+](https://docs.docker.com/reference/cli/docker/container/run/#volume) flag, as you would
+when calling `docker run`:
+
+```bash
+deeplabcut-docker bash --gpus all -v /home/john:/home/john
+```
+
+Use `DLC_VERSION` and `CUDA_VERSION` to select the Hub tag (unset `DLC_VERSION` uses
+`latest` / `latest-jupyter`):
+
+```bash
+DLC_VERSION=3.0.0rc14 CUDA_VERSION=12.4 deeplabcut-docker bash --gpus all
+```
+
+To use a specific image instead of the default tags, pass `--image repo:tag`.
+Make sure that the image supports jupyter notebooks when passing `notebook`.
+
+### Jupyter Notebooks Running on Remote Servers
+
+Sometimes, we want to run Jupyter Notebooks on remote servers but connect to them
+through the browser on our local machine. To do so, port forwarding needs to be used.
+This is straightforward, and there are many resources you can explore on how to do so (
+such as [this StackOverflow post](https://stackoverflow.com/a/69244262) or the [Jupyter
+Notebook docs](https://jupyter-notebook.readthedocs.io/en/4.x/public_server.html)).
+
+```{warning}
+The Jupyter image uses a fixed default access token (deeplabcut) that is publicly
+known. Anyone who can reach port 8888 on your machine can execute arbitrary
+code in the container. Do not expose port 8888 to the internet (e.g. via
+a cloud VM's firewall or a public 0.0.0.0 binding without a reverse proxy).
+For local use, bind the port to localhost only (e.g. -p 127.0.0.1:8888:8888)
+and use SSH port forwarding to access the server remotely, as described below.
+To use a custom token, pass `-e NOTEBOOK_TOKEN=<your-token>` to `docker run`.
+Passing `-e NOTEBOOK_TOKEN=` (i.e. an empty string) **disables** token-authentication.
+```
+
+This can easily be done with `deeplabcut-docker`. To run a DeepLabCut notebook on a
+remote server:
+
+```bash
+# The Jupyter Server is running on port 8888 in the docker container
+# You forward your server's port XXXX to the container's port 8888
+# You forward port your laptop's port YYYY to port XXXX on the server
+ssh -L localhost:YYYY:localhost:XXXX john@123.456.78.987
+DLC_NOTEBOOK_PORT=XXXX deeplabcut-docker notebook --gpus all
+
+# Example with XXXX=8889, YYYY=8890
+# 1. Connect to your server, using port forwarding
+ssh -L localhost:8890:localhost:8889 john@123.456.78.987
+
+# 2. On the remote server, use deeplabcut-docker to launch the container
+DLC_NOTEBOOK_PORT=8889 deeplabcut-docker notebook --gpus all
+
+# 3. Connect to the server running on your machine at http://127.0.0.1:8890!
+```
+
+### Using Docker without `deeplabcut-docker`
+
+Docker images can also be run without the `deeplabcut-docker` package, for more expert
+users. This is not the recommended, as many of the nice features (such as starting
+the container with the current user instead of root) won't be there.
+
+The `core` image can simply be run by pulling the image and using `docker run`:
+
+```bash
+docker pull deeplabcut/deeplabcut:latest
+docker run -it --rm --gpus all deeplabcut/deeplabcut:latest
+```
+
+The `jupyter` image cannot be run in the same way. Notebook servers cannot be run as
+the root user (which can be dangerous) without passing the `--allow-root` option, so
+running `docker run deeplabcut/deeplabcut:latest-jupyter` will lead to an
+error (`Running as root is not recommended. Use --allow-root to bypass`). What you can
+do (and we do in the `deeplabcut-docker` package) is to build a docker image with the
+`jupyter` image as a base. We would recommend doing this for the `core` images as well.
+You can create the `Dockerfile`:
+
+```dockerfile
+FROM deeplabcut/deeplabcut:latest-jupyter
+ARG UID
+ARG GID
+ARG UNAME
+ARG GNAME
+
+# Create same user as on the host system
+RUN mkdir -p /home/${UNAME}
+RUN mkdir -p /app
+RUN groupadd -g ${GID} ${GNAME} || groupmod -o -g ${GID} ${GNAME}
+RUN useradd -d /home/${UNAME} -s /bin/bash -u ${UID} -g ${GID} ${UNAME}
+RUN chown -R ${UNAME}:${GNAME} /home/${UNAME}
+RUN chown -R ${UNAME}:${GNAME} /app
+WORKDIR /app
+
+# Switch to the local user from now on
+USER ${UNAME}
+```
+
+And then build and run:
+
+```bash
+docker build \
+  --build-arg UID=$(id -u) \
+  --build-arg GID=$(id -g) \
+  --build-arg UNAME=$(id -un) \
+  --build-arg GNAME=$(id -gn) \
+  -t my-dlc-image \
+  .
+docker run -p 127.0.0.1:8889:8888 -it --rm --gpus all my-dlc-image
+```
+
 ## For developers
 
-Make sure your docker daemon is running and navigate to the repository root directory.
-You can build the images by running
+Make sure your Docker daemon is running. From the `docker/` directory, build with
+Buildx bake (see `docker-bake.hcl`):
 
+```bash
+cd docker
+docker buildx bake
 ```
-docker/build.sh build
+
+Set `MARK_LATEST=true` when building the primary CUDA variant if you want `latest` /
+`latest-jupyter` tags included. Push to Docker Hub (after `docker login`):
+
+```bash
+docker buildx bake --push
 ```
 
-Note that this assumes that you have rights to execute `docker build` and `docker run` commands which requires either `sudo` access or membership in the `docker` group on your local machine. If you are not in the `docker` group, run the script with the environment variable `DOCKER="sudo docker"` set to override the default docker command.
-
-Images can be verified by running
-
-```
-docker/build.sh test
-``` 
-
-Built images can be pushed to DockerHub by running
-
-```
-docker/build.sh push
-``` 
+Note that this assumes that you have rights to execute `docker build` and `docker run`
+commands which requires either `sudo` access or membership in the `docker` group on
+your local machine. If you are not in the `docker` group, run `sudo docker buildx bake`
+(and `sudo docker buildx bake --push` when pushing) or add your user to the `docker`
+group.
 
 ## Prerequisites (if you don't have Docker installed already)
 
 **(1)** Install Docker. See https://docs.docker.com/install/ & for Ubuntu: https://docs.docker.com/install/linux/docker-ce/ubuntu/
-Test docker: 
+Test docker:
 
     $ sudo docker run hello-world
-    
+
  The output should be: ``Hello from Docker! This message shows that your installation appears to be working correctly.``
 
-*if you get the error ``docker: Error response from daemon: Unknown runtime specified nvidia.`` just simply restart docker: 
-  
+*if you get the error ``docker: Error response from daemon: Unknown runtime specified nvidia.`` just simply restart docker:
+
        $ sudo systemctl daemon-reload
        $ sudo systemctl restart docker
 
-    
+
 **(2)** Add your user to the docker group (https://docs.docker.com/install/linux/linux-postinstall/#manage-docker-as-a-non-root-user)
-Quick guide  to create the docker group and add your user: 
+Quick guide  to create the docker group and add your user:
 Create the docker group.
 
     $ sudo groupadd docker
@@ -99,12 +213,12 @@ Ascii art in the MOTD is adapted from https://ascii.co.uk/art/mice and https://p
                      '.__/o   o\__.'
                        `{=  ^  =}´
                          >  u  <
- ____________________.""`-------`"".______________________  
+ ____________________.""`-------`"".______________________
 \   ___                   __         __   _____       __  /
 /  / _ \ ___  ___  ___   / /  ___ _ / /  / ___/__ __ / /_ \
 \ / // // -_)/ -_)/ _ \ / /__/ _ `// _ \/ /__ / // // __/ /
 //____/ \__/ \__// .__//____/\_,_//_.__/\___/ \_,_/ \__/  \
 \_________________________________________________________/
-                       ___)( )(___ `-.___. 
+                       ___)( )(___ `-.___.
                       (((__) (__)))      ~`
 ```

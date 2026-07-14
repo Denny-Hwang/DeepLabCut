@@ -9,17 +9,17 @@
 # Licensed under GNU Lesser General Public License v3.0
 #
 import os
-import pytest
-from conftest import TEST_DATA_DIR
-from deeplabcut.utils.auxfun_videos import VideoWriter
 
+import pytest
+
+from deeplabcut.utils.auxfun_videos import VideoWriter
 
 POS_FRAMES = 1  # Equivalent to cv2.CAP_PROP_POS_FRAMES
 
 
 @pytest.fixture()
-def video_clip():
-    return VideoWriter(os.path.join(TEST_DATA_DIR, "vid.avi"))
+def video_clip(test_data_dir):
+    return VideoWriter(os.path.join(test_data_dir, "vid.avi"))
 
 
 def test_reader_wrong_inputs(tmp_path):
@@ -37,10 +37,10 @@ def test_reader_check_integrity(video_clip):
     assert os.path.getsize(log_file) == 0
 
 
-def test_reader_video_path(video_clip):
+def test_reader_video_path(video_clip, test_data_dir):
     assert video_clip.name == "vid"
     assert video_clip.format == ".avi"
-    assert video_clip.directory == TEST_DATA_DIR
+    assert video_clip.directory == test_data_dir
 
 
 def test_reader_metadata(video_clip):
@@ -57,9 +57,7 @@ def test_reader_wrong_fps(video_clip):
 
 
 def test_reader_duration(video_clip):
-    assert video_clip.calc_duration() == pytest.approx(
-        video_clip.calc_duration(robust=False), abs=0.01
-    )
+    assert video_clip.calc_duration() == pytest.approx(video_clip.calc_duration(robust=False), abs=0.01)
 
 
 def test_reader_set_frame(video_clip):
@@ -93,9 +91,7 @@ def test_writer_bbox(video_clip):
     assert video_clip.get_bbox(relative=True) == (0, 1, 0, 1)
 
 
-@pytest.mark.parametrize(
-    "start, end", [(0, 10), ("0:0", "0:10"), ("00:00:00", "00:00:10")]
-)
+@pytest.mark.parametrize("start, end", [(0, 10), ("0:0", "0:10"), ("00:00:00", "00:00:10")])
 def test_writer_shorten_invalid_timestamps(video_clip, start, end):
     with pytest.raises(ValueError):
         video_clip.shorten(start, end)

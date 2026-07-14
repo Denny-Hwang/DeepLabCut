@@ -8,7 +8,8 @@
 #
 # Licensed under GNU Lesser General Public License v3.0
 #
-"""Code to export DeepLabCut models for DLCLive inference"""
+"""Code to export DeepLabCut models for DLCLive inference."""
+
 import copy
 from pathlib import Path
 
@@ -16,13 +17,14 @@ import torch
 
 import deeplabcut.pose_estimation_pytorch.apis.utils as utils
 import deeplabcut.pose_estimation_pytorch.data as dlc3_data
-import deeplabcut.utils.auxiliaryfunctions as af
+from deeplabcut.core.config import ProjectConfig
+from deeplabcut.pose_estimation_pytorch.config import PoseConfig
 from deeplabcut.pose_estimation_pytorch.runners.snapshots import Snapshot
 from deeplabcut.pose_estimation_pytorch.task import Task
 
 
 def export_model(
-    config: str | Path,
+    config: ProjectConfig | dict | Path | str,
     shuffle: int = 1,
     trainingsetindex: int = 0,
     snapshotindex: int | None = None,
@@ -75,7 +77,7 @@ def export_model(
         >>>     snapshotindex=-1,
         >>> )
     """
-    cfg = af.read_config(str(config))
+    cfg = ProjectConfig.from_any(config)
     if iteration is not None:
         cfg["iteration"] = iteration
 
@@ -88,9 +90,7 @@ def export_model(
 
     if snapshotindex is None:
         snapshotindex = loader.project_cfg["snapshotindex"]
-    snapshots = utils.get_model_snapshots(
-        snapshotindex, loader.model_folder, loader.pose_task
-    )
+    snapshots = utils.get_model_snapshots(snapshotindex, loader.model_folder, loader.pose_task)
 
     if len(snapshots) == 0:
         raise ValueError(
@@ -102,9 +102,7 @@ def export_model(
     if loader.pose_task == Task.TOP_DOWN and not without_detector:
         if detector_snapshot_index is None:
             detector_snapshot_index = loader.project_cfg["detector_snapshotindex"]
-        detector_snapshots = utils.get_model_snapshots(
-            detector_snapshot_index, loader.model_folder, Task.DETECT
-        )
+        detector_snapshots = utils.get_model_snapshots(detector_snapshot_index, loader.model_folder, Task.DETECT)
 
         if len(detector_snapshots) == 0:
             raise ValueError(
@@ -133,6 +131,11 @@ def export_model(
             model_cfg = copy.deepcopy(loader.model_cfg)
             if wipe_paths:
                 wipe_paths_from_model_config(model_cfg)
+
+            # Convert typed config to plain dict so torch.save doesn't pickle
+            # custom types (which require weights_only=False to load)
+            if isinstance(model_cfg, PoseConfig):
+                model_cfg = model_cfg.to_dict()
 
             pose_weights = torch.load(snapshot.path, **load_kwargs)["model"]
             export_dict = dict(config=model_cfg, pose=pose_weights)
@@ -177,18 +180,15 @@ def get_export_filename(
     return export_filename + ".pt"
 
 
-def wipe_paths_from_model_config(model_cfg: dict) -> None:
-    """
-    Removes all paths from the contents of the ``pytorch_config`` file.
+def wipe_paths_from_model_config(model_cfg: PoseConfig) -> None:
+    """Removes all paths from the contents of the ``pytorch_config`` file.
 
     Args:
         model_cfg: The model configuration to wipe.
     """
-    model_cfg["metadata"]["project_path"] = ""
-    model_cfg["metadata"]["pose_config_path"] = ""
-    if "weight_init" in model_cfg["train_settings"]:
-        model_cfg["train_settings"]["weight_init"] = None
-    if "resume_training_from" in model_cfg:
-        model_cfg["resume_training_from"] = None
-    if "resume_training_from" in model_cfg.get("detector", {}):
-        model_cfg["detector"]["resume_training_from"] = None
+    model_cfg.metadata.project_path = None
+    model_cfg.metadata.pose_config_path = None
+    model_cfg.train_settings.weight_init = None
+    model_cfg.resume_training_from = None
+    if model_cfg.detector is not None:
+        model_cfg.detector.resume_training_from = None

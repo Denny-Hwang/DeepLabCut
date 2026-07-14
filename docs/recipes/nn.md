@@ -1,4 +1,12 @@
+---
+deeplabcut:
+  last_content_updated: '2025-06-30'
+  last_metadata_updated: '2026-03-06'
+  ignore: false
+---
+
 (tf-training-tips-and-tricks)=
+
 # Model training tips & tricks
 
 ## TensorFlow Engine: Limiting a GPU's memory consumption
@@ -6,7 +14,7 @@
 With TensorFlow, all GPU memory is allocated to training by default, preventing
 other Tensorflow processes from being run on the same machine.
 
-A flexible solution to limiting memory usage is to call 
+A flexible solution to limiting memory usage is to call
 `deeplabcut.train(..., allow_growth=True)`, which dynamically grows the GPU memory
 region as it is needed. Another, stricter option is to explicitly cap GPU usage to only
 a fraction of the available memory. For example, allocating a maximum of 1/4 of the
@@ -20,6 +28,7 @@ sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 ```
 
 (tf-custom-image-augmentation)=
+
 ## Using custom image augmentation
 
 Image augmentation is the process of artificially expanding the training set
@@ -31,16 +40,13 @@ by DeepLabCut, default values can be readily overwritten prior to training. See 
 augmentation variables defined in the:
 
 - PyTorch Engine: [docs for the `pytorch_config.yaml` file](dlc3-pytorch-config)
-- TensorFlow Engine: [default pose_cfg.yaml file](
-https://github.com/DeepLabCut/DeepLabCut/blob/main/deeplabcut/pose_cfg.yaml#L23-L74)
+- TensorFlow Engine: [default pose_cfg.yaml file](https://github.com/DeepLabCut/DeepLabCut/blob/main/deeplabcut/pose_cfg.yaml#L23-L74)
 
-For the single-animal TensorFlow models, [you have several options](
-https://deeplabcut.github.io/DeepLabCut/docs/standardDeepLabCut_UserGuide.html#f-create-training-dataset-s-and-selection-of-your-neural-network)
+For the single-animal TensorFlow models, [you have several options](https://deeplabcut.github.io/DeepLabCut/docs/standardDeepLabCut_UserGuide.html#f-create-training-dataset-s-and-selection-of-your-neural-network)
 for image augmentation when calling `create_training_dataset`
 
 An in-depth tutorial on image augmentation and training hyperparameters can be found [
-here](
-https://deeplabcut.github.io/DeepLabCut/docs/recipes/pose_cfg_file_breakdown.html).
+here](https://deeplabcut.github.io/DeepLabCut/docs/recipes/pose_cfg_file_breakdown.html).
 
 ## Evaluating intermediate (and all) snapshots
 
@@ -49,10 +55,11 @@ the highest performance. Therefore, you should analyze ALL snapshots, and select
 best. Put 'all' in the snapshots section of the `config.yaml` to do this.
 
 (what-neural-network-should-i-use)=
+
 ## What neural network should I use? (Trade offs, speed performance, and considerations)
 
 You always select the network type when you create a training data set: i.e., standard
-dlc: `deeplabcut.create_training_dataset(config, net_type=resnet_50)` , or maDLC: 
+dlc: `deeplabcut.create_training_dataset(config, net_type=resnet_50)` , or maDLC:
 `deeplabcut.create_multianimaltraining_dataset(config, net_type=dlcrnet_ms5)`. There is
 nothing else you should change.
 
@@ -70,8 +77,9 @@ where to start.
 **TL;DR - your best performance for most everything is ResNet-50; MobileNetV2-1 is much
 faster, needs less memory on your GPU to train and nearly as accurate.**
 
-***
-#### ResNets:
+______________________________________________________________________
+
+### ResNets:
 
 In Mathis et al. 2018 we benchmarked three networks: **ResNet-50, ResNet-101, and
 ResNet-101ws**. For ALL lab applications, ResNet-50 was enough. For all the demo videos
@@ -84,7 +92,7 @@ other on the open-field dataset):
 <img src="https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/1548558406678-S32H6T3M3U7BWVS4IGYD/ke17ZwdGBToddI8pDm48kD4CqqHoJgLzZVYacqX5G8QUqsxRUqqbr1mOJYKfIPR7LoDQ9mXPOjoJoqy81S2I8N_N4V1vUb5AoIIIbLZhVYy7Mythp_T-mtop-vrsUOmeInPi9iDjx9w8K4ZfjXt2dqTB9h4P9po3-YSCqzKkit0PccqviqYX7RTAdOBUgXwbCjLISwBs8eEdxAxTptZAUg/SupplFig2-01.png?format=1000w" width="80%">
 </p>
 
-This is also one of the main result figures, generated with ResNet-50. BLUE is 
+This is also one of the main result figures, generated with ResNet-50. BLUE is
 training - RED is testing - BLACK is our best human-level performance, and 10 pixels is
 the width - of the mouse nose -so anything under that is good performance for us on this
 task!
@@ -93,7 +101,7 @@ task!
 <img src="https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/1547585317499-0QWTWL5KVPK8ZWINQ30U/ke17ZwdGBToddI8pDm48kH23KVWagbNOYpajbj_MQLNZw-zPPgdn4jUwVcJE1ZvWQUxwkmyExglNqGp0IvTJZamWLI2zvYWH8K3-s_4yszcp2ryTI0HqTOaaUohrI8PI-4DGGLi3WdhIPQDa6khDzRWGU5SknjCO3Yd6rloU2Zw/ErrorvsTrainingsetSize.png?format=1000w" width="60%">
 </p>
 
-Here are also some speed stats for analyzing videos with ResNet-50, see 
+Here are also some speed stats for analyzing videos with ResNet-50, see
 https://www.biorxiv.org/content/early/2018/10/30/457242 for more details:
 
 <p align="center">
@@ -106,7 +114,7 @@ like multiple humans dancing, this is a good option. You should then also set
 shuffle folder (before you train). Note, for ResNet-50 this does NOT help, and can
 hurt.
 
-#### When should I use a MobileNet?
+### When should I use a MobileNet?
 
 MobileNets are fast to run, fast to train, more memory efficient, and faster for
 analysis (inference) - e.g. on CPUs they are 4 times faster, on GPUs up to 2x! So, if
@@ -134,26 +142,25 @@ red - read more here: https://arxiv.org/abs/1909.11229)
 <img src="https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/1570054117297-YA8WOYG50EK55WM6Y8ZI/ke17ZwdGBToddI8pDm48kAWg0301pwdoqO-Bo48aILYUqsxRUqqbr1mOJYKfIPR7LoDQ9mXPOjoJoqy81S2I8N_N4V1vUb5AoIIIbLZhVYxCRW4BPu10St3TBAUQYVKcZbh5EzlyubXk7Q3qHw5ayJHISnXwMOq8Pp90__8eMJefaZFcnumpU7B4DHTHEFkQ/speedtables.png?format=1000w" width="100%">
 </p>
 
-#### When should I use an EfficientNet?
+### When should I use an EfficientNet?
 
 Built with inverse residual blocks like MobileNets, but more powerful than ResNets, due
-to optimal depth/width/resolution scaling, [EfficientNet](
-https://arxiv.org/abs/1905.11946) are an excellent choice if you want speed and
+to optimal depth/width/resolution scaling, [EfficientNet](https://arxiv.org/abs/1905.11946) are an excellent choice if you want speed and
 performance. They do require more careful handling though! Especially for small
 datasets, you will need to tune the batch size and learning rates. So, we suggest these
 for more advanced users, or those willing to run experiments to find the best settings.
-Here is the speed comparison, and for performance see our latest work at: 
+Here is the speed comparison, and for performance see our latest work at:
 http://horse10.deeplabcut.org
 
 <p align="center">
 <img src="https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/1615891029784-87JAZJN1C5S4HS62F752/ke17ZwdGBToddI8pDm48kLId9V2zDiOqQ5EIZz4b_S0UqsxRUqqbr1mOJYKfIPR7LoDQ9mXPOjoJoqy81S2I8N_N4V1vUb5AoIIIbLZhVYxCRW4BPu10St3TBAUQYVKctCpCjeabgTq1Hv_G9BIks_zjAnmEpAaVGioFPvsrieXDegXGHA0z-h8QeHOQDokM/speedTest.png?format=1000w" width="100%">
 </p>
 
-#### How can I compare them?
+### How can I compare them?
 
 Great question! So, the best way to do this is to use the **same** test/train split (
 that is generated in create_training_dataset) with different models. Here, as of 2.1+,
 we have a **new** function that lets you do this easily. Instead of using
 `create_training_dataset` you will run `create_training_model_comparison` (see the
 docstrings by `deeplabcut.create_training_model_comparison?` or run the Project Manager
-GUI - `deeplabcut.launch_dlc()`-  for assistance.
+GUI - `deeplabcut.launch_dlc()`- for assistance.

@@ -10,29 +10,16 @@
 #
 from __future__ import annotations
 
-import os
 import random
-from pathlib import Path
 
 import numpy as np
 import torch
 
-from deeplabcut.utils.auxiliaryfunctions import read_plainconfig
-
-
-def create_folder(path_to_folder):
-    """Creates all folders contained in the path.
-
-    Args:
-        path_to_folder: Path to the folder that should be created
-    """
-    if not os.path.exists(path_to_folder):
-        os.makedirs(path_to_folder)
+from deeplabcut.pose_estimation_pytorch.config.pose import DetectorConfig, PoseConfig
 
 
 def fix_seeds(seed: int) -> None:
-    """
-    Fixes the random seed for python, numpy and pytorch
+    """Fixes the random seed for python, numpy and pytorch.
 
     Args:
         seed: the seed to set
@@ -44,8 +31,8 @@ def fix_seeds(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-def resolve_device(model_config: dict) -> str:
-    """Determines which device should be used from the model config
+def resolve_device(model_config: PoseConfig | DetectorConfig) -> str:
+    """Determines which device should be used from the model config.
 
     When the device is set to 'auto':
         If an Nvidia GPU is available, selects the device as cuda:0.
@@ -54,13 +41,17 @@ def resolve_device(model_config: dict) -> str:
     Otherwise, simply returns the selected device
 
     Args:
-        model_config: the configuration for the pose model
+        model_config (PoseConfig | dict | str | Path): The PyTorch pose configuration.
 
     Returns:
         the device on which training should be run
     """
-    device = model_config["device"]
-    supports_mps = "resnet" in model_config.get("net_type", "resnet")
+    device = model_config.device
+
+    if isinstance(model_config, DetectorConfig):
+        supports_mps = False
+    else:
+        supports_mps = "resnet" in model_config.get("net_type", "")
 
     if device == "auto":
         if torch.cuda.is_available():

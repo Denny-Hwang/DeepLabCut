@@ -10,13 +10,11 @@
 #
 from __future__ import annotations
 
-from typing import Tuple
-
 import torch
 
 from deeplabcut.pose_estimation_pytorch.models.predictors.base import (
-    BasePredictor,
     PREDICTORS,
+    BasePredictor,
 )
 
 
@@ -55,9 +53,7 @@ class HeatmapPredictor(BasePredictor):
         self.location_refinement = location_refinement
         self.locref_std = locref_std
 
-    def forward(
-        self, stride: float, outputs: dict[str, torch.Tensor]
-    ) -> dict[str, torch.Tensor]:
+    def forward(self, stride: float, outputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Forward pass of SinglePredictor. Gets predictions from model output.
 
         Args:
@@ -85,9 +81,7 @@ class HeatmapPredictor(BasePredictor):
         locrefs = None
         if self.location_refinement:
             locrefs = outputs["locref"]
-            locrefs = locrefs.permute(0, 2, 3, 1).reshape(
-                batch_size, height, width, num_joints, 2
-            )
+            locrefs = locrefs.permute(0, 2, 3, 1).reshape(batch_size, height, width, num_joints, 2)
             locrefs = locrefs * self.locref_std
 
         poses = self.get_pose_prediction(heatmaps, locrefs, scale_factors)
@@ -97,9 +91,7 @@ class HeatmapPredictor(BasePredictor):
 
         return {"poses": poses}
 
-    def get_top_values(
-        self, heatmap: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_top_values(self, heatmap: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Get the top values from the heatmap.
 
         Args:
@@ -119,9 +111,7 @@ class HeatmapPredictor(BasePredictor):
         y, x = heatmap_top // nx, heatmap_top % nx
         return y, x
 
-    def get_pose_prediction(
-        self, heatmap: torch.Tensor, locref: torch.Tensor | None, scale_factors
-    ) -> torch.Tensor:
+    def get_pose_prediction(self, heatmap: torch.Tensor, locref: torch.Tensor | None, scale_factors) -> torch.Tensor:
         """Gets the pose prediction given the heatmaps and locref.
 
         Args:
@@ -134,29 +124,40 @@ class HeatmapPredictor(BasePredictor):
 
         Example:
             >>> predictor = HeatmapPredictor(location_refinement=True, locref_std=7.2801)
-            >>> heatmap = torch.rand(32, 17, 64, 64)
-            >>> locref = torch.rand(32, 17, 64, 64, 2)
+            >>> heatmap = torch.rand(32, 64, 64, 17)
+            >>> locref = torch.rand(32, 64, 64, 17, 2)
             >>> scale_factors = (0.5, 0.5)
             >>> poses = predictor.get_pose_prediction(heatmap, locref, scale_factors)
         """
-        y, x = self.get_top_values(heatmap)
+        y, x = self.get_top_values(heatmap)  # y, x: (batch_size, num_joints)
 
         batch_size, num_joints = x.shape
 
-        dz = torch.zeros((batch_size, 1, num_joints, 3), device=heatmap.device)
-        for b in range(batch_size):
-            for j in range(num_joints):
-                dz[b, 0, j, 2] = heatmap[b, y[b, j], x[b, j], j]
-                if locref is not None:
-                    dz[b, 0, j, :2] = locref[b, y[b, j], x[b, j], j, :]
+        # Create batch and joint indices for indexing
+        # batch_idx: [[0,0,0,...], [1,1,1,...], [2,2,2,...], ...]
+        batch_idx = (
+            torch.arange(batch_size, device=heatmap.device).unsqueeze(1).expand(-1, num_joints)
+        )  # (batch_size, num_joints)
+        # joint_idx: [[0,1,2,...], [0,1,2,...], [0,1,2,...], ...]
+        joint_idx = (
+            torch.arange(num_joints, device=heatmap.device).unsqueeze(0).expand(batch_size, -1)
+        )  # (batch_size, num_joints)
 
-        x, y = torch.unsqueeze(x, 1), torch.unsqueeze(y, 1)
+        # Vectorized extraction of heatmap scores and locref offsets
+        scores = heatmap[batch_idx, y, x, joint_idx]  # (batch_size, num_joints)
+
+        dz = torch.zeros((batch_size, 1, num_joints, 3), device=heatmap.device)
+        dz[:, 0, :, 2] = scores
+
+        if locref is not None:
+            offsets = locref[batch_idx, y, x, joint_idx, :]  # (batch_size, num_joints, 2)
+            dz[:, 0, :, :2] = offsets
+
+        x, y = x.unsqueeze(1), y.unsqueeze(1)  # x, y: (batch_size, 1, num_joints)
 
         x = x * scale_factors[1] + 0.5 * scale_factors[1] + dz[:, :, :, 0]
         y = y * scale_factors[0] + 0.5 * scale_factors[0] + dz[:, :, :, 1]
 
-        pose = torch.zeros((batch_size, 1, num_joints, 3), device=heatmap.device)
-        pose[:, :, :, 0] = x
-        pose[:, :, :, 1] = y
-        pose[:, :, :, 2] = dz[:, :, :, 2]
+        pose = torch.stack([x, y, dz[:, :, :, 2]], dim=-1)  # (batch_size, 1, num_joints, 3)
+
         return pose

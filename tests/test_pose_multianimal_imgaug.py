@@ -8,16 +8,22 @@
 #
 # Licensed under GNU Lesser General Public License v3.0
 #
-import numpy as np
 import os
+
+import numpy as np
 import pytest
-from conftest import TEST_DATA_DIR
+
+from deeplabcut.core.config import read_config_as_dict, write_config
 from deeplabcut.pose_estimation_tensorflow.datasets import (
     Batch,
-    pose_multianimal_imgaug,
     PoseDatasetFactory,
+    pose_multianimal_imgaug,
 )
-from deeplabcut.utils import read_plainconfig
+
+tf = pytest.importorskip(
+    "tensorflow",
+    reason="TensorFlow not installed (use a project extra such as .[tf])",
+)
 
 
 def mock_imread(path, mode):
@@ -28,9 +34,18 @@ pose_multianimal_imgaug.imread = mock_imread
 
 
 @pytest.fixture()
-def ma_dataset():
-    cfg = read_plainconfig(os.path.join(TEST_DATA_DIR, "pose_cfg.yaml"))
-    cfg["project_path"] = TEST_DATA_DIR
+def ma_dataset(test_data_dir):
+    ## TODO @deruyter92 2026-06-15: this test config is currently invalid and needs to be
+    # updated. For now it is updated in place. (see https://github.com/DeepLabCut/UnitTestData/issues/4)
+    for cfg_name in ("config.yaml", "pose_cfg.yaml"):
+        cfg_path = os.path.join(test_data_dir, cfg_name)
+        cfg = read_config_as_dict(cfg_path)
+        if len(cfg.get("bodyparts", [])) > 0 and len(cfg.get("multianimalbodyparts", [])) > 0:
+            cfg["bodyparts"] = "MULTI!"
+        write_config(cfg_path, cfg, overwrite=True)
+
+    cfg = read_config_as_dict(os.path.join(test_data_dir, "pose_cfg.yaml"))
+    cfg["project_path"] = test_data_dir
     cfg["dataset"] = "trimouse_train_data.pickle"
     return PoseDatasetFactory.create(cfg)
 
@@ -67,21 +82,13 @@ def test_get_batch(ma_dataset):
     for batch_size in 1, 4, 8, 16:
         ma_dataset.batch_size = batch_size
         batch_images, joint_ids, batch_joints, data_items = ma_dataset.get_batch()
-        assert (
-            len(batch_images)
-            == len(joint_ids)
-            == len(batch_joints)
-            == len(data_items)
-            == batch_size
-        )
-        for data_item, joint_id, batch_joint in zip(
-            data_items, joint_ids, batch_joints
-        ):
+        assert len(batch_images) == len(joint_ids) == len(batch_joints) == len(data_items) == batch_size
+        for data_item, joint_id, batch_joint in zip(data_items, joint_ids, batch_joints, strict=False):
             assert len(data_item.joints) == len(joint_id)
             assert len(batch_joint) == len(np.concatenate(joint_id))
             start = 0
             mask = ~np.isnan(batch_joint).any(axis=1)
-            for joints, id_ in zip(data_item.joints.values(), joint_id):
+            for joints, id_ in zip(data_item.joints.values(), joint_id, strict=False):
                 inds = id_ + start
                 mask_ = mask[inds]
                 np.testing.assert_equal(joints[:, 0], id_[mask_])
@@ -102,22 +109,14 @@ def test_get_targetmaps(ma_dataset, num_idchannel):
     scale = np.mean(target_size / ma_dataset.default_size)
     maps = ma_dataset.get_targetmaps_update(*batch, sm_size, scale)
     assert all(len(map_) == ma_dataset.batch_size for map_ in maps.values())
-    assert (
-        maps[Batch.part_score_targets][0].shape
-        == maps[Batch.part_score_weights][0].shape
-    )
-    assert (
-        maps[Batch.part_score_targets][0].shape[2]
-        == ma_dataset.cfg["num_joints"] + num_idchannel
-    )
+    assert maps[Batch.part_score_targets][0].shape == maps[Batch.part_score_weights][0].shape
+    assert maps[Batch.part_score_targets][0].shape[2] == ma_dataset.cfg["num_joints"] + num_idchannel
     assert maps[Batch.locref_targets][0].shape == maps[Batch.locref_mask][0].shape
     assert maps[Batch.locref_targets][0].shape[2] == 2 * ma_dataset.cfg["num_joints"]
-    assert (
-        maps[Batch.pairwise_targets][0].shape == maps[Batch.pairwise_targets][0].shape
-    )
+    assert maps[Batch.pairwise_targets][0].shape == maps[Batch.pairwise_targets][0].shape
     assert maps[Batch.pairwise_targets][0].shape[2] == 2 * ma_dataset.cfg["num_limbs"]
 
 
 def test_batching(ma_dataset):
     for _ in range(10):
-        batch = ma_dataset.next_batch()
+        ma_dataset.next_batch()

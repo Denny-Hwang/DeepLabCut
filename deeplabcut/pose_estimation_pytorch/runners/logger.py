@@ -14,17 +14,19 @@ import csv
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
+import yaml
 from torch.utils.data import DataLoader
 from torchvision.utils import draw_bounding_boxes, draw_keypoints
 
 try:
     import wandb
+
     has_wandb = True
 except ImportError:
     has_wandb = False
@@ -38,8 +40,7 @@ LOGGER = deeplabcut_pose_estimation_pytorch_registry.Registry(
 
 
 def setup_file_logging(filepath: Path) -> None:
-    """
-    Sets up logging to a file
+    """Sets up logging to a file.
 
     Args:
         filepath: the path where logs should be saved
@@ -59,7 +60,7 @@ def setup_file_logging(filepath: Path) -> None:
 
 
 def destroy_file_logging() -> None:
-    """Resets the logging module to log everything to the console"""
+    """Resets the logging module to log everything to the console."""
     root = logging.getLogger()
     handlers = [h for h in root.handlers]
     for handler in handlers:
@@ -67,19 +68,19 @@ def destroy_file_logging() -> None:
 
 
 class BaseLogger(ABC):
-    """Base class for logging training runs"""
+    """Base class for logging training runs."""
 
     @abstractmethod
     def log_config(self, config: dict = None) -> None:
-        """Logs the configuration data for a training run
+        """Logs the configuration data for a training run.
 
         Args:
             config: the training configuration used for the run
         """
 
     @abstractmethod
-    def log(self, metrics: dict[str, Any], step: Optional[int] = None) -> None:
-        """Logs data from a training run
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+        """Logs data from a training run.
 
         Args:
             metrics: the metrics to log
@@ -88,11 +89,11 @@ class BaseLogger(ABC):
 
     @abstractmethod
     def save(self) -> None:
-        """Saves the current training logs"""
+        """Saves the current training logs."""
 
 
 class ImageLoggerMixin(ABC):
-    """Mixin for loggers that can log images
+    """Mixin for loggers that can log images.
 
     Before starting training, you should call `select_images_to_log`, which will
     select a train and a test image for which inputs/outputs will always be logged.
@@ -129,7 +130,7 @@ class ImageLoggerMixin(ABC):
         self._logged = {}
         self._denormalize = transforms.Compose(
             [
-                transforms.Normalize(mean=[0, 0, 0], std=[1/0.229, 1/0.224, 1/0.225]),
+                transforms.Normalize(mean=[0, 0, 0], std=[1 / 0.229, 1 / 0.224, 1 / 0.225]),
                 transforms.Normalize(mean=[-0.485, -0.456, -0.406], std=[1, 1, 1]),
             ]
         )
@@ -143,7 +144,7 @@ class ImageLoggerMixin(ABC):
         targets: dict[str, dict[str, torch.Tensor]],
         step: int,
     ) -> None:
-        """Log images for a batch
+        """Log images for a batch.
 
         Args:
             inputs: the inputs for the model, containing at least an "image" key
@@ -151,15 +152,15 @@ class ImageLoggerMixin(ABC):
             targets: the targets for each model head
             step: the current step
         """
-        pass
 
     def select_images_to_log(self, train: DataLoader, valid: DataLoader) -> None:
-        """Selects the train and test images to log
+        """Selects the train and test images to log.
 
         Args:
             train: the training dataloader
             valid: the inference dataloader
         """
+
         def _caption(image_path: str) -> str:
             p = Path(image_path)
             return f"{p.parent.name}.{p.stem}"
@@ -198,9 +199,7 @@ class ImageLoggerMixin(ABC):
             # pytorch.org/vision/0.18/generated/torchvision.utils.draw_keypoints.html
             # pytorch.org/vision/0.17/generated/torchvision.utils.draw_keypoints.html
             keypoints[torch.any(torch.isnan(keypoints), dim=-1)] = -1
-            image = draw_keypoints(
-                image, keypoints=keypoints[..., :2], colors="red", radius=5
-            )
+            image = draw_keypoints(image, keypoints=keypoints[..., :2], colors="red", radius=5)
 
         if bboxes is not None and len(bboxes) > 0:
             assert len(bboxes.shape) == 2
@@ -209,7 +208,7 @@ class ImageLoggerMixin(ABC):
         return image.permute(1, 2, 0).numpy()
 
     def _heatmap_softmax(self, heatmaps: torch.Tensor) -> torch.Tensor:
-        """Applies a softmax to the heatmap channels"""
+        """Applies a softmax to the heatmap channels."""
         return self._softmax(heatmaps.detach().cpu())
 
     def _prepare_images(
@@ -218,24 +217,29 @@ class ImageLoggerMixin(ABC):
         outputs: dict[str, dict[str, torch.Tensor]],
         targets: dict[str, dict[str, dict[str, torch.Tensor]]],
     ) -> dict[str, np.ndarray]:
-        """Prepares images for logging"""
+        """Prepares images for logging."""
         image_logs = {}
         paths = inputs["path"]
         images_to_log = [(i, p) for i, p in enumerate(paths) if p in self._logged]
         for idx, path in images_to_log:
             base = self._logged[path]["name"]
-            keypoints = inputs.get("annotations", {}).get("keypoints")
+
+            # TODO @deruyter92: This pattern should be refactored throughout the codebase
+            # it is reading a config value that is supposed to be missing / None.
+            keypoints = (inputs.get("annotations") or {}).get("keypoints")
             if keypoints is not None:
                 keypoints = keypoints[idx]
             image_logs[f"{base}.input"] = self._prepare_image(
-                inputs["image"][idx], keypoints=keypoints, denormalize=True,
+                inputs["image"][idx],
+                keypoints=keypoints,
+                denormalize=True,
             )
 
             for head, head_outputs in outputs.items():
                 if "heatmap" in head_outputs:
                     head_heatmaps = self._heatmap_softmax(head_outputs["heatmap"][idx])
                     head_targets = targets[head]["heatmap"]["target"][idx]
-                    for j, (h, t) in enumerate(zip(head_heatmaps, head_targets)):
+                    for j, (h, t) in enumerate(zip(head_heatmaps, head_targets, strict=False)):
                         h = self._prepare_image(h.unsqueeze(0))
                         t = self._prepare_image(t.unsqueeze(0))
                         image_logs[f"{base}.heatmap.{j}"] = np.concatenate([h, t])
@@ -259,6 +263,7 @@ class WandbLogger(ImageLoggerMixin, BaseLogger):
         run_name: str = "tmp",
         image_log_interval: int | None = None,
         model: PoseModel = None,
+        train_folder: str = None,
         **wandb_kwargs,
     ) -> None:
         """Initialize the WandbLogger class.
@@ -269,11 +274,11 @@ class WandbLogger(ImageLoggerMixin, BaseLogger):
             image_log_interval: How often train/test images are logged in epochs (if
                 None, train/test inputs are never logged).
             model: The model to log. Defaults to None.
+            train_folder: path to the train folder (used to store the W&B run identifiers)
             wandb_kwargs: extra arguments to pass to ``wb.init``
 
         Example:
             logger = WandbLogger(project_name="mice", run_name="exp1", model=my_model)
-
         """
         super().__init__(image_log_interval=image_log_interval)
 
@@ -294,9 +299,26 @@ class WandbLogger(ImageLoggerMixin, BaseLogger):
         if model is None:
             raise ValueError("Specify the model to track!")
         self.run.watch(model)
+        if train_folder is None:
+            raise ValueError("Specify the train folder!")
+        self.train_folder = Path(train_folder)
+        self._save_wandb_info()
 
-    def log(self, metrics: dict[str, Any], step: Optional[int] = None) -> None:
-        """Logs metrics from runs
+    def _save_wandb_info(self):
+        wandb_info = {
+            "entity": self.run.entity,
+            "project": self.run.project,
+            "run_id": self.run.id,
+        }
+
+        output_path = self.train_folder / "wandb_info.yaml"
+        with open(output_path, "w") as f:
+            yaml.safe_dump(wandb_info, f)
+
+        logging.info(f"WandB run info saved to {output_path}")
+
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+        """Logs metrics from runs.
 
         Args:
             metrics: the metrics to log
@@ -315,7 +337,7 @@ class WandbLogger(ImageLoggerMixin, BaseLogger):
         targets: dict[str, dict[str, dict[str, torch.Tensor]]],
         step: int,
     ) -> None:
-        """Log images for a batch
+        """Log images for a batch.
 
         Args:
             inputs: the inputs for the model, containing at least an "image" key
@@ -361,23 +383,23 @@ class WandbLogger(ImageLoggerMixin, BaseLogger):
             logger = WandbLogger()
             config = {"learning_rate": 0.001, "batch_size": 32}
             logger.log_config(config)
-
         """
         self.run.config.update(config)
 
 
 @LOGGER.register_module
 class CSVLogger(BaseLogger):
-    """Logger saving stats and metrics to a CSV file"""
+    """Logger saving stats and metrics to a CSV file."""
 
-    def __init__(self, train_folder: Path, log_filename: str) -> None:
-        """Initialize the WandbLogger class.
+    def __init__(self, train_folder: str, log_filename: str) -> None:
+        """Initialize the CSVLogger class.
 
         Args:
             train_folder: The path of the folder containing training files.
             log_filename: The name of the file in which to store training stats
         """
         super().__init__()
+        train_folder = Path(train_folder)
         self.train_folder = train_folder
         self.log_filename = log_filename
         self.log_file = train_folder / log_filename
@@ -386,8 +408,12 @@ class CSVLogger(BaseLogger):
         self._metric_store: list[dict] = []
         self._logged_metrics: set[str] = set()
 
-    def log(self, metrics: dict[str, Any], step: Optional[int] = None) -> None:
-        """Logs metrics from runs
+        # Load existing data if the file exists (e.g., when resuming from snapshot)
+        if self.log_file.exists():
+            self._load_existing_data()
+
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
+        """Logs metrics from runs.
 
         Args:
             metrics: the metrics to log
@@ -409,28 +435,74 @@ class CSVLogger(BaseLogger):
         self.save()
 
     def save(self):
-        """Saves the metrics to the file system"""
+        """Saves the metrics to the file system."""
         logs = self._prepare_logs()
-        with open(self.log_file, 'w', newline='') as f:
+        with open(self.log_file, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerows(logs)
 
     def log_config(self, config: dict = None) -> None:
-        """Does not do anything as the config should already be saved
+        """Does not do anything as the config should already be saved.
 
         Args:
             config: Experiment config file.
         """
-        pass
+
+    def _load_existing_data(self) -> None:
+        """Loads existing CSV data if the log file exists."""
+        logging.info(f"Loading existing CSV data from {self.log_file}")
+        try:
+            with open(self.log_file, newline="") as f:
+                reader = csv.DictReader(f)
+
+                # Update logged metrics from header
+                if "step" not in reader.fieldnames:
+                    raise ValueError("Invalid CSV format: missing 'step' column")
+
+                metric_names = [m for m in reader.fieldnames if m != "step"]
+                self._logged_metrics.update(metric_names)
+
+                # Load data rows
+                steps = []
+                metric_store = []
+                for row in reader:
+                    try:
+                        step = int(row["step"])
+                    except (ValueError, KeyError):
+                        logging.warning(f"Invalid step value in row: {row}")
+                        continue
+
+                    # Convert metric values: empty strings -> None, numeric strings -> float
+                    step_metrics = {}
+                    for metric in metric_names:
+                        value = row.get(metric, "").strip()
+                        if not value:
+                            step_metrics[metric] = None
+                        else:
+                            try:
+                                step_metrics[metric] = float(value)
+                            except ValueError:
+                                step_metrics[metric] = value
+
+                    steps.append(step)
+                    metric_store.append(step_metrics)
+
+        except Exception as e:
+            logging.warning(f"Failed to load existing CSV data from {self.log_file}: {e}. Starting with empty log.")
+            return
+        self._steps.extend(steps)
+        self._metric_store.extend(metric_store)
 
     def _prepare_logs(self) -> list[list]:
-        """Prepares the data to log as a list of strings"""
+        """Prepares the data to log as a list of strings."""
         if len(self._metric_store) == 0:
             return []
 
         metrics = list(sorted(self._logged_metrics))
         logs = [["step"] + metrics]
-        for step, step_metrics in zip(self._steps, self._metric_store):
-            logs.append([step] + [step_metrics.get(m) for m in metrics])
+        for step, step_metrics in zip(self._steps, self._metric_store, strict=False):
+            # Convert None values to empty strings for proper CSV formatting
+            row = [step] + ["" if step_metrics.get(m) is None else step_metrics.get(m) for m in metrics]
+            logs.append(row)
 
         return logs

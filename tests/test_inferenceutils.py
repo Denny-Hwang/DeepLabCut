@@ -8,14 +8,15 @@
 #
 # Licensed under GNU Lesser General Public License v3.0
 #
-import numpy as np
 import os
 import pickle
-import pytest
-from conftest import TEST_DATA_DIR
 from copy import deepcopy
-from deeplabcut.core import inferenceutils
+
+import numpy as np
+import pytest
 from scipy.spatial.distance import squareform
+
+from deeplabcut.core import inferenceutils
 
 
 def test_conv_square_to_condensed_indices():
@@ -25,7 +26,7 @@ def test_conv_square_to_condensed_indices():
     mat[rows, cols] = mat[cols, rows] = np.arange(1, len(rows) + 1)
     vec = squareform(mat)
     vals = []
-    for i, j in zip(rows, cols):
+    for i, j in zip(rows, cols, strict=False):
         ind = inferenceutils._conv_square_to_condensed_indices(i, j, n)
         vals.append(vec[ind])
     np.testing.assert_equal(vec, vals)
@@ -36,9 +37,7 @@ def test_calc_object_keypoint_similarity(real_assemblies):
     xy1 = real_assemblies[0][0].xy
     xy2 = real_assemblies[0][1].xy
     assert inferenceutils.calc_object_keypoint_similarity(xy1, xy1, sigma) == 1
-    assert np.isclose(
-        inferenceutils.calc_object_keypoint_similarity(xy1, xy2, sigma), 0
-    )
+    assert np.isclose(inferenceutils.calc_object_keypoint_similarity(xy1, xy2, sigma), 0)
     xy3 = xy1.copy()
     xy3[: len(xy3) // 2] = np.nan
     assert inferenceutils.calc_object_keypoint_similarity(xy3, xy1, sigma) == 0.5
@@ -51,19 +50,12 @@ def test_calc_object_keypoint_similarity(real_assemblies):
     symmetric_pair = [0, 11]
     xy4[symmetric_pair] = xy4[symmetric_pair[::-1]]
     assert inferenceutils.calc_object_keypoint_similarity(xy1, xy4, sigma) != 1
-    assert (
-        inferenceutils.calc_object_keypoint_similarity(
-            xy1, xy4, sigma, symmetric_kpts=[symmetric_pair]
-        )
-        == 1
-    )
+    assert inferenceutils.calc_object_keypoint_similarity(xy1, xy4, sigma, symmetric_kpts=[symmetric_pair]) == 1
 
 
 def test_match_assemblies(real_assemblies):
     assemblies = real_assemblies[0]
-    num_gt, matches = inferenceutils.match_assemblies(
-        assemblies, assemblies[::-1], 0.01
-    )
+    num_gt, matches = inferenceutils.match_assemblies(assemblies, assemblies[::-1], 0.01)
     assert len(assemblies) == len(matches)
     for m in matches:
         assert m.prediction is m.ground_truth
@@ -78,9 +70,7 @@ def test_evaluate_assemblies(real_assemblies):
     assemblies = {i: real_assemblies[i] for i in range(3)}
     n_thresholds = 5
     thresholds = np.linspace(0.5, 0.95, n_thresholds)
-    dict_ = inferenceutils.evaluate_assembly(
-        assemblies, assemblies, oks_thresholds=thresholds
-    )
+    dict_ = inferenceutils.evaluate_assembly(assemblies, assemblies, oks_thresholds=thresholds)
     assert dict_["mAP"] == dict_["mAR"] == 1
     assert len(dict_["precisions"]) == len(dict_["recalls"]) == n_thresholds
     assert dict_["precisions"].shape[1] == 101
@@ -141,8 +131,8 @@ def test_assembly():
     assert len(ass3) == 2
 
 
-def test_assembler(tmpdir_factory, real_assemblies):
-    with open(os.path.join(TEST_DATA_DIR, "trimouse_full.pickle"), "rb") as file:
+def test_assembler(tmpdir_factory, real_assemblies, test_data_dir):
+    with open(os.path.join(test_data_dir, "trimouse_full.pickle"), "rb") as file:
         data = pickle.load(file)
     with pytest.warns(UserWarning):
         ass = inferenceutils.Assembler(
@@ -172,17 +162,15 @@ def test_assembler(tmpdir_factory, real_assemblies):
     ass.assemble()
     assert not ass.unique
     assert len(ass.assemblies) == len(real_assemblies)
-    assert sum(1 for a in ass.assemblies.values() for _ in a) == sum(
-        1 for a in real_assemblies.values() for _ in a
-    )
+    assert sum(1 for a in ass.assemblies.values() for _ in a) == sum(1 for a in real_assemblies.values() for _ in a)
 
     output_dir = tmpdir_factory.mktemp("data")
     ass.to_h5(output_dir.join("fake.h5"))
     ass.to_pickle(output_dir.join("fake.pickle"))
 
 
-def test_assembler_with_single_bodypart(real_assemblies):
-    with open(os.path.join(TEST_DATA_DIR, "trimouse_full.pickle"), "rb") as file:
+def test_assembler_with_single_bodypart(real_assemblies, test_data_dir):
+    with open(os.path.join(test_data_dir, "trimouse_full.pickle"), "rb") as file:
         temp = pickle.load(file)
     data = {"metadata": temp.pop("metadata")}
     for k, dict_ in temp.items():
@@ -207,8 +195,8 @@ def test_assembler_with_single_bodypart(real_assemblies):
     assert all(len(a) == 3 for a in ass.assemblies.values())
 
 
-def test_assembler_with_unique_bodypart(real_assemblies_montblanc):
-    with open(os.path.join(TEST_DATA_DIR, "montblanc_full.pickle"), "rb") as file:
+def test_assembler_with_unique_bodypart(real_assemblies_montblanc, test_data_dir):
+    with open(os.path.join(test_data_dir, "montblanc_full.pickle"), "rb") as file:
         data = pickle.load(file)
     ass = inferenceutils.Assembler(
         data,
@@ -223,21 +211,15 @@ def test_assembler_with_unique_bodypart(real_assemblies_montblanc):
     ass.assemble(chunk_size=0)
     assert len(ass.assemblies) == len(real_assemblies_montblanc[0])
     assert len(ass.unique) == len(real_assemblies_montblanc[1])
-    assemblies = np.concatenate(
-        [ass.xy for assemblies in ass.assemblies.values() for ass in assemblies]
-    )
+    assemblies = np.concatenate([ass.xy for assemblies in ass.assemblies.values() for ass in assemblies])
     assemblies_gt = np.concatenate(
-        [
-            ass.xy
-            for assemblies in real_assemblies_montblanc[0].values()
-            for ass in assemblies
-        ]
+        [ass.xy for assemblies in real_assemblies_montblanc[0].values() for ass in assemblies]
     )
     np.testing.assert_equal(assemblies, assemblies_gt)
 
 
-def test_assembler_with_identity(tmpdir_factory, real_assemblies):
-    with open(os.path.join(TEST_DATA_DIR, "trimouse_full.pickle"), "rb") as file:
+def test_assembler_with_identity(tmpdir_factory, real_assemblies, test_data_dir):
+    with open(os.path.join(test_data_dir, "trimouse_full.pickle"), "rb") as file:
         data = pickle.load(file)
 
     # Generate fake identity predictions
@@ -270,9 +252,7 @@ def test_assembler_with_identity(tmpdir_factory, real_assemblies):
     ass.assemble()
     assert not ass.unique
     assert len(ass.assemblies) == len(real_assemblies)
-    assert sum(1 for a in ass.assemblies.values() for _ in a) == sum(
-        1 for a in real_assemblies.values() for _ in a
-    )
+    assert sum(1 for a in ass.assemblies.values() for _ in a) == sum(1 for a in real_assemblies.values() for _ in a)
     assert all(np.all(_.data[:, -1] != -1) for a in ass.assemblies.values() for _ in a)
 
     # Test now with identity only and ensure assemblies
@@ -293,11 +273,11 @@ def test_assembler_with_identity(tmpdir_factory, real_assemblies):
     ass.to_pickle(output_dir.join("fake.pickle"))
 
 
-def test_assembler_calibration(real_assemblies):
-    with open(os.path.join(TEST_DATA_DIR, "trimouse_full.pickle"), "rb") as file:
+def test_assembler_calibration(real_assemblies, test_data_dir):
+    with open(os.path.join(test_data_dir, "trimouse_full.pickle"), "rb") as file:
         data = pickle.load(file)
     ass = inferenceutils.Assembler(data, max_n_individuals=3, n_multibodyparts=12)
-    ass.calibrate(os.path.join(TEST_DATA_DIR, "trimouse_calib.h5"))
+    ass.calibrate(os.path.join(test_data_dir, "trimouse_calib.h5"))
     assert ass._kde is not None
     assert ass.safe_edge
 

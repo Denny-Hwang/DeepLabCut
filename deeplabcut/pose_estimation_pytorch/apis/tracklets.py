@@ -11,8 +11,8 @@
 import os
 import pickle
 import warnings
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -20,33 +20,39 @@ from scipy.optimize import linear_sum_assignment
 from scipy.special import softmax
 from tqdm import tqdm
 
-import deeplabcut.utils.auxiliaryfunctions as auxiliaryfunctions
 import deeplabcut.utils.auxfun_multianimal as auxfun_multianimal
+import deeplabcut.utils.auxiliaryfunctions as auxiliaryfunctions
 from deeplabcut.core import trackingutils
+from deeplabcut.core.deprecation import renamed_parameter
 from deeplabcut.core.engine import Engine
 from deeplabcut.core.inferenceutils import Assembly
 from deeplabcut.pose_estimation_pytorch.apis.utils import (
     get_scorer_name,
-    list_videos_in_folder,
+    parse_snapshot_index_for_analysis,
 )
+from deeplabcut.pose_estimation_pytorch.data.dlcloader import DLCLoader
+from deeplabcut.utils.auxfun_videos import collect_video_paths
 
 
+@renamed_parameter(old="videotype", new="video_extensions", since="3.0.0")
 def convert_detections2tracklets(
     config: str,
-    videos: Union[str, List[str]],
-    videotype: Optional[str] = None,
+    videos: str | list[str],
+    video_extensions: str | Sequence[str] | None = None,
     shuffle: int = 1,
     trainingsetindex: int = 0,
     overwrite: bool = False,
-    destfolder: Optional[str] = None,
-    ignore_bodyparts: Optional[List[str]] = None,
-    inferencecfg: Optional[dict] = None,
+    destfolder: str | None = None,
+    ignore_bodyparts: list[str] | None = None,
+    inferencecfg: dict | None = None,
     modelprefix="",
     greedy: bool = False,  # TODO(niels): implement greedy assembly during video analysis
     calibrate: bool = False,  # TODO(niels): implement assembly calibration during video analysis
     window_size: int = 0,  # TODO(niels): implement window size selection for assembly during video analysis
     identity_only=False,
     track_method="",
+    snapshot_index: int | str | None = None,
+    detector_snapshot_index: int | str | None = None,
 ):
     """TODO: Documentation, clean & remove code duplication (with analyze video)"""
     cfg = auxiliaryfunctions.read_config(config)
@@ -54,7 +60,7 @@ def convert_detections2tracklets(
     track_method = auxfun_multianimal.get_track_method(cfg, track_method=track_method)
 
     if len(cfg["multianimalbodyparts"]) == 1 and track_method != "box":
-        warnings.warn("Switching to `box` tracker for single point tracking...")
+        warnings.warn("Switching to `box` tracker for single point tracking...", stacklevel=2)
         track_method = "box"
         cfg["default_track_method"] = track_method
         auxiliaryfunctions.write_config(config, cfg)
@@ -90,30 +96,41 @@ def convert_detections2tracklets(
         )
 
     if inference_cfg is None:
-        inference_cfg = auxfun_multianimal.read_inferencecfg(
-            model_dir / "test" / "inference_cfg.yaml", cfg
-        )
+        inference_cfg = auxfun_multianimal.read_inferencecfg(model_dir / "test" / "inference_cfg.yaml", cfg)
     auxfun_multianimal.check_inferencecfg_sanity(cfg, inference_cfg)
 
     if len(cfg["multianimalbodyparts"]) == 1 and track_method != "box":
-        warnings.warn("Switching to `box` tracker for single point tracking...")
+        warnings.warn("Switching to `box` tracker for single point tracking...", stacklevel=2)
         track_method = "box"
         # Also ensure `boundingboxslack` is greater than zero, otherwise overlap
         # between trackers cannot be evaluated, resulting in empty tracklets.
         inference_cfg["boundingboxslack"] = max(inference_cfg["boundingboxslack"], 40)
 
+    loader = DLCLoader(
+        config,
+        trainset_index=trainingsetindex,
+        shuffle=shuffle,
+        modelprefix=modelprefix,
+    )
+    snapshot_index, detector_snapshot_index = parse_snapshot_index_for_analysis(
+        loader.project_cfg,
+        loader.model_cfg,
+        snapshot_index,
+        detector_snapshot_index,
+    )
     dlc_scorer = get_scorer_name(
         cfg,
         shuffle,
         train_fraction,
-        snapshot_index=None,
-        detector_index=None,
+        snapshot_index=snapshot_index,
+        detector_index=detector_snapshot_index,
         modelprefix=modelprefix,
     )
 
-    videos = list_videos_in_folder(videos, videotype)
+    paths_input = videos
+    videos = collect_video_paths(videos, extensions=video_extensions)
     if len(videos) == 0:
-        print(f"No videos were found in {videos}")
+        print(f"No videos were found in {paths_input}")
         return
 
     for video in videos:
@@ -143,9 +160,7 @@ def convert_detections2tracklets(
             print(f"Tracklets already computed at {track_filename}")
             print("Set overwrite = True to overwrite.")
         else:
-            assemblies_path = data_filename.with_stem(
-                data_filename.stem + "_assemblies"
-            ).with_suffix(".pickle")
+            assemblies_path = data_filename.with_stem(data_filename.stem + "_assemblies").with_suffix(".pickle")
             if not assemblies_path.exists():
                 raise FileNotFoundError(
                     f"Could not find the assembles file {assemblies_path}. You're "
@@ -164,7 +179,7 @@ def convert_detections2tracklets(
                 num_frames=data["metadata"]["nframes"],
                 ignore_bodyparts=ignore_bodyparts,
                 unique_bodyparts=cfg["uniquebodyparts"],
-                identity_only=identity_only
+                identity_only=identity_only,
             )
 
             with open(track_filename, "wb") as f:
@@ -185,10 +200,10 @@ def build_tracklets(
     joints: list[str],
     scorer: str,
     num_frames: int,
-    ignore_bodyparts: list[str]|None = None,
-    unique_bodyparts: list|None = None,
-    identity_only: bool = False
-) -> dict :
+    ignore_bodyparts: list[str] | None = None,
+    unique_bodyparts: list | None = None,
+    identity_only: bool = False,
+) -> dict:
 
     if track_method == "box":
         mot_tracker = trackingutils.SORTBox(
@@ -258,17 +273,11 @@ def build_tracklets(
                 # Optimal identity assignment based on soft voting
                 mat = np.zeros((len(animals), inference_cfg["topktoretain"]))
                 for row, animal_pose in enumerate(animals):
-                    animal_pose = animal_pose[
-                        ~np.isnan(animal_pose).any(axis=1)
-                    ]
-                    unique_ids, idx = np.unique(
-                        animal_pose[:, 3], return_inverse=True
-                    )
+                    animal_pose = animal_pose[~np.isnan(animal_pose).any(axis=1)]
+                    unique_ids, idx = np.unique(animal_pose[:, 3], return_inverse=True)
                     total_scores = np.bincount(idx, weights=animal_pose[:, 2])
                     softmax_id_scores = softmax(total_scores)
-                    for pred_id, softmax_score in zip(
-                            unique_ids.astype(int), softmax_id_scores
-                    ):
+                    for pred_id, softmax_score in zip(unique_ids.astype(int), softmax_id_scores, strict=False):
                         mat[row, pred_id] = softmax_score
 
                 inds = linear_sum_assignment(mat, maximize=True)
@@ -300,12 +309,10 @@ def _create_tracklets_header(joints, dlc_scorer):
 
 
 def _conv_predictions_to_assemblies(
-    image_names: List[str], predictions: Dict[str, np.ndarray]
-) -> Dict[int, List[Assembly]]:
-    """
-    Converts predictions to an assemblies dictionary
-    predictions shape (num_animals, num_keypoints, 2 or 3)
-    """
+    image_names: list[str], predictions: dict[str, np.ndarray]
+) -> dict[int, list[Assembly]]:
+    """Converts predictions to an assemblies dictionary predictions shape (num_animals,
+    num_keypoints, 2 or 3)"""
     assemblies = {}
     if len(predictions) == 0:
         return assemblies

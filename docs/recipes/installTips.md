@@ -1,4 +1,16 @@
+---
+deeplabcut:
+  last_content_updated: '2025-02-28'
+  last_metadata_updated: '2026-04-27'
+  ignore: false
+  visibility: online
+  status: outdated
+  recommendation: archive
+  notes: Should be removed in favor of the main installation guide.
+---
+
 (installation-tips)=
+
 # Installation Tips
 
 ## How to use the latest updates directly from GitHub
@@ -7,7 +19,8 @@ We often update the master deeplabcut code base on GitHub, and then ~1 a month w
 
 ### Method 1:
 
-If you want to *use* the latest, you can use pip and add the specific tags, such as `gui`, etc. by modifying and running: 
+If you want to *use* the latest, you can use pip and add the specific tags, such as `gui`, etc. by modifying and running:
+
 ```
 pip install --upgrade 'git+https://github.com/deeplabcut/deeplabcut.git#egg=deeplabcut[gui]'
 ```
@@ -18,13 +31,13 @@ which will download and update deeplabcut, and any dependencies that don't match
 pip install --upgrade --upgrade-strategy eager 'git+https://github.com/deeplabcut/deeplabcut.git#egg=deeplabcut[gui]'
 ```
 
-### Method 2: 
+### Method 2:
 
 If you want to be able to *edit* the source code of DeepLabCut, i.e., maybe add a feature or fix a 🐛, then you need to "clone" the source code:
 
 **Step 1:**
 
-- git clone the repo into a folder on your computer:  
+- git clone the repo into a folder on your computer:
 
 - click on this green button and copy the link:
 
@@ -53,14 +66,14 @@ Then, you can see what version you have with `deeplabcut.__version__`
 If you make changes, you can also then utilize our test scripts. Run the desired test script found here (you will need to git clone first): https://github.com/DeepLabCut/DeepLabCut/blob/master/examples/.
 
 i.e., for example:
+
 ```
 # Testing with the PyTorch engine
 python testscript_pytorch_multi_animal.py
 
 # Testing with the TensorFlow engine
-python testscript_multianimal.py
+python testscript_tensorflow_multi_animal.py
 ```
-
 
 ## Installation on Ubuntu 18.04 LTS
 
@@ -78,7 +91,8 @@ then, download CUDA 10 from here: https://developer.nvidia.com/cuda-downloads an
 wget http://developer.download.nvidia.com/compute/cuda/10.1/Prod/local_installers/cuda_10.1.243_418.87.00_linux.run
 sudo sh cuda_10.1.243_418.87.00_linux.run
 ```
- with the exception that I also (afterwards):
+
+with the exception that I also (afterwards):
 
 ```
 sudo add-apt-repository ppa:graphics-drivers/ppa
@@ -95,13 +109,16 @@ gcc --version
 ```
 
 output:
+
 ```
 gcc (Ubuntu 7.3.0-27ubuntu1~18.04) 7.3.0
 Copyright (C) 2017 Free Software Foundation, Inc.
 This is free software; see the source for copying conditions.  There is NO
 warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE
 ```
+
 Then:
+
 ```
 sudo apt install nvidia-cuda-toolkit gcc-7
 ```
@@ -141,6 +158,7 @@ sudo apt-get -y install cuda
 ```
 
 Then:
+
 ```
 sudo add-apt-repository ppa:graphics-drivers/ppa
 sudo apt update
@@ -156,6 +174,7 @@ re-open terminal and check gcc version:
 `gcc --version`
 
 output:
+
 ```python
 gcc --version
 gcc (Ubuntu 9.3.0-17ubuntu1~20.04) 9.3.0
@@ -163,6 +182,7 @@ Copyright (C) 2019 Free Software Foundation, Inc.
 This is free software; see the source for copying conditions.  There is NO
 warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ```
+
 Then finish installation:
 
 `sudo apt install nvidia-cuda-toolkit gcc-9`
@@ -206,6 +226,7 @@ sudo apt-get install \
     gnupg \
     lsb-release
 ```
+
 add key: `curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg`
 
 ```
@@ -213,7 +234,9 @@ echo \
   "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
   $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 ```
+
 Then:
+
 ```
 sudo apt-get update
 sudo apt-get install docker-ce docker-ce-cli containerd.io
@@ -225,6 +248,7 @@ some clean up:
 now you can run `sudo docker run hello-world`
 
 and get:
+
 ```
 Hello from Docker!
 This message shows that your installation appears to be working correctly.
@@ -261,6 +285,7 @@ and run:
 `bash Anaconda3-2021.05-Linux-x86_64.sh`
 
 and you get:
+
 ```python
 Welcome to Anaconda3 2021.05
 
@@ -289,7 +314,7 @@ Follow prompts!
 ## Troubleshooting: Note, if you get a failed build due to wxPython (note, this does not happen on Ubuntu 18, 16, etc), i.e.:
 
 ```{warning}
-DeepLabCut no longer uses `wxpython` for its GUI - if you're getting such an error, 
+DeepLabCut no longer uses `wxpython` for its GUI - if you're getting such an error,
 you're likely installing an old version of DeepLabCut.
 ```
 
@@ -300,9 +325,11 @@ failed
 
 CondaEnvException: Pip failed
 ```
+
 You can either: remove conda env: `conda remove --name DEEPLABCUT --all`, open the DLC-GPU.yaml file (any text editor!) and change `deeplabcut[gui]` to `deeplabcut`. Then run: `conda env create -f DEEPLABCUT.yaml` again...
 
 then you will get:
+
 ```python
 
  Successfully uninstalled decorator-5.0.9
@@ -323,49 +350,13 @@ Activate! `conda activate DEEPLABCUT` and then run: `conda install -c conda-forg
 
 Then run `python -m deeplabcut` which launches the DLC GUI.
 
-## DeepLabCut MacOS M-chip installation environment instructions:
-
-This only assumes you have anaconda installed. Use the `DEEPLABCUT_M1.yaml` conda file
-if you have a newer MacBook (with an M1, M2, M3, M4 chip or more later), and follow
-these steps:
-
-(1) git clone the deeplabcut cut repo:
-
-```bash
-git clone https://github.com/DeepLabCut/DeepLabCut.git
-```
-
-(2) in the program terminal run: `cd DeepLabCut/conda-environments`
-
-(3) Then, run:
-
-```bash
-conda env create -f DEEPLABCUT.yaml
-```
-
-(4) Finally, activate your environment and to launch DLC with the GUI
-
-```bash
-conda activate DEEPLABCUT
-python -m deeplabcut
-```
-
-The GUI will open. Of course, you can also run DeepLabCut in headless mode.
-
-If **you want to use the TensorFlow engine**, you'll need to install the `apple_mchips`
-extra with DeepLabCut. You can do so by running:
-
-```bash
-pip install deeplabcut[apple_mchips]
-```
-
 ## How to confirm that your GPU is being used by DeepLabCut
 
 During training and analysis steps, DeepLabCut does not use the GPU processor heavily. To confirm that DeepLabCut is properly using your GPU:
 
 **On Windows**:
 
-(1) Open the task manager. If it looks like the image below, click on "More Details" 
+(1) Open the task manager. If it looks like the image below, click on "More Details"
 
 ![](https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/a0db3157-2228-4444-8084-36801659f272/installBrandon1.png?format=500w)
 
@@ -373,9 +364,9 @@ During training and analysis steps, DeepLabCut does not use the GPU processor he
 
 ![](https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/117e3573-60bb-4599-b00b-c75276b24173/installBrandon2.png?format=500w)
 
-(3) Click on the **Performance** tab. On that page, click on the small arrow under GPU (it might start as **3D**, and change it to **CUDA**.  
+(3) Click on the **Performance** tab. On that page, click on the small arrow under GPU (it might start as **3D**, and change it to **CUDA**.
 
-(4) During training, you should see the **Dedicated GPU memory usage** increase to near maximum, and you should see some activity in the **CUDA** graph. The graph below is the activity while running `testscript.py`.
+(4) During training, you should see the **Dedicated GPU memory usage** increase to near maximum, and you should see some activity in the **CUDA** graph. The graph below is the activity while running `testscript_tensorflow_single_animal.py`.
 
 ![](https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/b1d03ca0-f8ba-4a31-a399-6e86856c81b0/installBrandon3.png?format=500w)
 

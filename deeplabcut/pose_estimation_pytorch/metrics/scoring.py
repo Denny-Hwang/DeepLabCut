@@ -10,17 +10,16 @@
 #
 from __future__ import annotations
 
-import numpy as np
 import pickle
+
+import numpy as np
 from sklearn.metrics import accuracy_score
 
 from deeplabcut.core.crossvalutils import find_closest_neighbors
 from deeplabcut.utils.auxiliaryfunctions import read_config
 
 
-def _match_identity_preds_to_gt(
-    config_path: str, full_pickle_path: str
-) -> tuple[np.ndarray, list]:
+def _match_identity_preds_to_gt(config_path: str, full_pickle_path: str) -> tuple[np.ndarray, list]:
     with open(full_pickle_path, "rb") as f:
         data = pickle.load(f)
     metadata = data.pop("metadata")
@@ -42,7 +41,8 @@ def _match_identity_preds_to_gt(
 
         df = df_gt.unstack("coords").reindex(joints, level="bodyparts")
         xy_pred = dict_["prediction"]["coordinates"][0]
-        for bpt, xy_gt in df.groupby(level="bodyparts"):
+        for bpt, xy_gt in df.T.groupby(level="bodyparts"):
+            xy_gt = xy_gt.T
             inds_gt = np.flatnonzero(np.all(~np.isnan(xy_gt), axis=1))
             n_joint = joints.index(bpt)
             xy = xy_pred[n_joint]
@@ -54,9 +54,7 @@ def _match_identity_preds_to_gt(
                 found = neighbors != -1
                 inds = np.flatnonzero(all_bpts == bpt)
                 id_ = dict_["prediction"]["identity"][n_joint]
-                ids[i, inds[inds_gt[found]], 1] = np.argmax(
-                    id_[neighbors[found]], axis=1
-                )
+                ids[i, inds[inds_gt[found]], 1] = np.argmax(id_[neighbors[found]], axis=1)
     ids = ids[:, :n_multibodyparts].reshape((len(data), len(cfg["individuals"]), -1, 2))
     return ids, list(data)
 

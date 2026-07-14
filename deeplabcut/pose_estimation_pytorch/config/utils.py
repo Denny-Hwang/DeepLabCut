@@ -8,16 +8,19 @@
 #
 # Licensed under GNU Lesser General Public License v3.0
 #
-"""Util functions to create pytorch pose configuration files"""
+"""Util functions to create pytorch pose configuration files."""
+
 from __future__ import annotations
 
 import copy
 from pathlib import Path
 
-from deeplabcut.core.config import read_config_as_dict
+from deeplabcut.core.config import ensure_plain_config, read_config_as_dict
+from deeplabcut.core.deprecation import deprecated
 from deeplabcut.utils import auxiliaryfunctions
 
 
+@ensure_plain_config
 def replace_default_values(
     config: dict | list,
     num_bodyparts: int | None = None,
@@ -63,8 +66,7 @@ def replace_default_values(
         var_name = var_parts[0]
         if updated_values[var_name] is None:
             raise ValueError(
-                f"Found {variable} in the configuration file, but there is no default "
-                f"value for this variable."
+                f"Found {variable} in the configuration file, but there is no default value for this variable."
             )
 
         if len(var_parts) == 1:
@@ -84,9 +86,7 @@ def replace_default_values(
             else:
                 raise ValueError(f"Unknown operator for variable: {variable}")
 
-        raise ValueError(
-            f"Found {variable} in the configuration file, but cannot parse it."
-        )
+        raise ValueError(f"Found {variable} in the configuration file, but cannot parse it.")
 
     updated_values = {
         "num_bodyparts": num_bodyparts,
@@ -112,49 +112,26 @@ def replace_default_values(
                 backbone_output_channels,
                 **kwargs,
             )
-        elif (
-            isinstance(config[k], str)
-            and config[k].strip().split(" ")[0] in updated_values.keys()
-        ):
+        elif isinstance(config[k], str) and config[k].strip().split(" ")[0] in updated_values.keys():
             config[k] = get_updated_value(config[k])
 
     return config
 
 
+@deprecated(replacement=None, since="3.1")
 def update_config(config: dict, updates: dict, copy_original: bool = True) -> dict:
-    """Updates items in the configuration file
+    """Deprecated helper for updating config dictionaries."""
+    from deeplabcut.pose_estimation_pytorch.config.make_pose_config import _update_config
 
-    The configuration dict should only be composed of primitive Python types
-    (dict, list and values). This is the case when reading the file using
-    `read_config_as_dict`.
-
-    Args:
-        config: the configuration dict to update
-        updates: the updates to make to the configuration dict
-        copy_original: whether to copy the original dict before updating it
-
-    Returns:
-        the updated dictionary
-    """
-    if copy_original:
-        config = copy.deepcopy(config)
-
-    for k, v in updates.items():
-        if k in config and isinstance(config[k], dict) and isinstance(v, dict):
-            if k in ("optimizer", "scheduler") and config["type"] != v["type"]:
-                # if changing the optimizer or scheduler type, update all values
-                config[k] = v
-            else:
-                config[k] = update_config(config[k], v, copy_original=False)
-        else:
-            config[k] = copy.deepcopy(v)
-    return config
+    return _update_config(config, updates, copy_original)
 
 
-def update_config_by_dotpath(
-    config: dict, updates: dict, copy_original: bool = True
-) -> dict:
-    """Updates items in the configuration file using dot notation for nested keys
+@deprecated(replacement=None, since="3.1")
+def update_config_by_dotpath(config: dict, updates: dict, copy_original: bool = True) -> dict:
+    """Deprecated helper for updating config dictionaries using dot notation.
+    ``DLCBaseConfig.set_nested`` (new in 3.1) can be used instead (not identical).
+
+    Updates items in the configuration file using dot notation for nested keys
 
     The configuration dict should only be composed of primitive Python types
     (dict, list and values). This is the case when reading the file using
@@ -184,7 +161,7 @@ def update_config_by_dotpath(
         # Navigate to nested location
         current = config
         for part in parts[:-1]:
-            if part not in current:
+            if part not in current or current[part] is None:
                 current[part] = {}
             current = current[part]
 
@@ -245,9 +222,7 @@ def available_models() -> list[str]:
         models.add("top_down_" + backbone)
 
     other_architectures = [
-        p
-        for p in configs_folder_path.iterdir()
-        if p.is_dir() and not p.name in ("backbones", "base", "detectors")
+        p for p in configs_folder_path.iterdir() if p.is_dir() and p.name not in ("backbones", "base", "detectors")
     ]
     for folder in other_architectures:
         variants = [p.stem for p in folder.iterdir() if p.suffix == ".yaml"]
@@ -258,11 +233,9 @@ def available_models() -> list[str]:
 
 
 def is_model_top_down(net_type: str) -> bool:
-    """Checks whenever a given net_type is top-down or not"""
+    """Checks whenever a given net_type is top-down or not."""
     if net_type not in available_models():
-        raise ValueError(
-            f"Model {net_type} is not part of available models, which are {str(available_models())}"
-        )
+        raise ValueError(f"Model {net_type} is not part of available models, which are {str(available_models())}")
 
     configs_dir = get_config_folder_path()
     backbones = load_backbones(configs_dir)
@@ -280,6 +253,17 @@ def is_model_top_down(net_type: str) -> bool:
     model_cfg = read_config_as_dict(cfg_path)
 
     return model_cfg.get("method", "BU").upper() == "TD"
+
+
+def is_model_cond_top_down(net_type: str) -> bool:
+    """Checks whether a given net_type is conditional top-down or not."""
+    if net_type not in available_models():
+        raise ValueError(f"Model {net_type} is not part of available models, which are {str(available_models())}")
+
+    if net_type.startswith("ctd_"):
+        return True
+    else:
+        return False
 
 
 def available_detectors() -> list[str]:

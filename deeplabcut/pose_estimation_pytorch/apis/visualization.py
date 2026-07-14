@@ -8,7 +8,8 @@
 #
 # Licensed under GNU Lesser General Public License v3.0
 #
-"""Methods to help with visualization of model outputs"""
+"""Methods to help with visualization of model outputs."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,7 +29,7 @@ import deeplabcut.pose_estimation_pytorch.apis.utils as utils
 import deeplabcut.pose_estimation_pytorch.data as data
 import deeplabcut.pose_estimation_pytorch.data.preprocessor as preprocessor
 import deeplabcut.pose_estimation_pytorch.models as models
-from deeplabcut.core.config import read_config_as_dict
+from deeplabcut.core.config import ProjectConfig
 from deeplabcut.core.engine import Engine
 from deeplabcut.pose_estimation_pytorch.task import Task
 from deeplabcut.utils import auxiliaryfunctions
@@ -114,18 +115,14 @@ def create_labeled_images(
             if color_by_individual:
                 kwargs["c"] = cmap(idx / total_idv)
             else:
-                c = np.linspace(0, 1, total_bodyparts)[:len(pose)][mask]
+                c = np.linspace(0, 1, total_bodyparts)[: len(pose)][mask]
                 kwargs["c"] = c
                 kwargs["cmap"] = cmap
 
             xy = xy[mask]
             ax.scatter(xy[:, 0], xy[:, 1], **kwargs)
             if len(bones) > 0:
-                ax.add_collection(
-                    collections.LineCollection(
-                        bones, colors=skeleton_color, alpha=alpha_value
-                    )
-                )
+                ax.add_collection(collections.LineCollection(bones, colors=skeleton_color, alpha=alpha_value))
 
         # plot unique bodyparts
         if unique_pred is not None:
@@ -139,24 +136,22 @@ def create_labeled_images(
                 kwargs["c"] = cmap(1)
             else:
                 c = np.linspace(0, 1, total_bodyparts)
-                kwargs["c"] = c[-len(unique_pred):][mask]
+                kwargs["c"] = c[-len(unique_pred) :][mask]
                 kwargs["cmap"] = cmap
 
             xy = xy[mask]
             ax.scatter(xy[:, 0], xy[:, 1], **kwargs)
 
         # plot bounding boxes
-        if "bboxes" in image_predictions:
+        if "bboxes" in image_predictions and "bbox_scores" in image_predictions:
             bboxes = image_predictions["bboxes"]
             bbox_scores = image_predictions["bbox_scores"]
-            for idx, (bbox, score) in enumerate(zip(bboxes, bbox_scores)):
+            for idx, (bbox, score) in enumerate(zip(bboxes, bbox_scores, strict=True)):
                 if score <= bboxes_pcutoff:
                     continue
 
                 xmin, ymin, w, h = bbox
-                rect = plt.Rectangle(
-                    (xmin, ymin), w, h, fill=False, edgecolor="green", linewidth=2
-                )
+                rect = plt.Rectangle((xmin, ymin), w, h, fill=False, edgecolor="green", linewidth=2)
                 ax.add_patch(rect)
 
         # save predictions
@@ -179,7 +174,7 @@ def extract_model_outputs(
     device: str = "auto",
     context: list[dict[str, np.ndarray]] | None = None,
 ) -> list[dict[str, np.ndarray]]:
-    """Obtains the outputs for a model for a list of images
+    """Obtains the outputs for a model for a list of images.
 
     Args:
         images: List of image paths for which to get model outputs.
@@ -237,15 +232,13 @@ def extract_model_outputs(
             head: {name: output.cpu().numpy() for name, output in head_outputs.items()}
             for head, head_outputs in output.items()
         }
-        model_data.append(
-            dict(inputs=inputs.cpu().numpy(), context=context, outputs=output)
-        )
+        model_data.append(dict(inputs=inputs.cpu().numpy(), context=context, outputs=output))
 
     return model_data
 
 
 def extract_maps(
-    config,
+    config: ProjectConfig | dict | Path | str,
     shuffle: int = 0,
     trainingsetindex: int | str = 0,
     device: str | None = None,
@@ -256,12 +249,11 @@ def extract_maps(
     snapshot_index: int | str | None = None,
     detector_snapshot_index: int | str | None = None,
 ) -> dict:
-    """
-    Extracts the different maps output by DeepLabCut models, such as scoremaps, location
-    refinement fields and part-affinity fields.
+    """Extracts the different maps output by DeepLabCut models, such as scoremaps,
+    location refinement fields and part-affinity fields.
 
     Args:
-        config: Full path of the config.yaml file as a string.
+        config (ProjectConfig | dict | Path | str): The project configuration.
         shuffle: Index of the shuffle for which to extract maps
         trainingset_index: Integer specifying which TrainingsetFraction to use. This
             variable can also be set to "all".
@@ -299,7 +291,7 @@ def extract_maps(
 
         >>> deeplabcut.extract_maps(config, 0, indices=[0, 103])
     """
-    cfg = read_config_as_dict(config)
+    cfg = ProjectConfig.from_any(config)
 
     trainset_indices = [trainingsetindex]
     if trainingsetindex == "all":
@@ -324,9 +316,11 @@ def extract_maps(
         bpt_names = metadata["bodyparts"] + metadata["unique_bodyparts"]
         paf_graph = []
         bpt_head_cfg = loader.model_cfg["model"]["heads"]["bodypart"]
+        # TODO @deruyter92: This pattern should be refactored throughout the codebase
+        # it is reading a config value that is supposed to be missing / None.
         if bpt_head_cfg["type"] == "DLCRNetHead":
-            paf_graph = bpt_head_cfg.get("predictor", {}).get("graph")
-            paf_indices = bpt_head_cfg.get("predictor", {}).get("edges_to_keep")
+            paf_graph = (bpt_head_cfg.get("predictor") or {}).get("graph")
+            paf_indices = (bpt_head_cfg.get("predictor") or {}).get("edges_to_keep")
             if paf_indices is not None:
                 paf_graph = [paf_graph[i] for i in paf_indices]
 
@@ -337,9 +331,7 @@ def extract_maps(
 
         if snapshot_index is None:
             snapshot_index = -1
-        snapshots = utils.get_model_snapshots(
-            snapshot_index, loader.model_folder, loader.pose_task
-        )
+        snapshots = utils.get_model_snapshots(snapshot_index, loader.model_folder, loader.pose_task)
 
         image_paths = loader.df.index
         if indices is not None:
@@ -347,9 +339,7 @@ def extract_maps(
         if len(image_paths) > 0 and isinstance(image_paths[0], tuple):
             image_paths = [Path(*img_path) for img_path in image_paths]
 
-        image_paths = [
-            (loader.project_path / img_path).resolve() for img_path in image_paths
-        ]
+        image_paths = [(loader.project_path / img_path).resolve() for img_path in image_paths]
 
         context = _get_context(image_paths, loader, detector_snapshot_index, device)
         train_idx = set(loader.split["train"])
@@ -373,17 +363,12 @@ def extract_maps(
                     image_idx = indices[idx]
 
                 # key can be just image_idx, or (image_idx, bbox_idx) for TD models
-                keys, images, outputs = _collect_model_outputs(
-                    loader.pose_task, result, image_idx
-                )
-                for key, image, output in zip(keys, images, outputs):
+                keys, images, outputs = _collect_model_outputs(loader.pose_task, result, image_idx)
+                for key, image, output in zip(keys, images, outputs, strict=False):
                     parsed = _parse_model_outputs(
                         image,
                         output,
-                        strides={
-                            k: runner.model.get_stride(k)
-                            for k in runner.model.heads.keys()
-                        },
+                        strides={k: runner.model.get_stride(k) for k in runner.model.heads.keys()},
                         denormalize_image=True,
                     )
                     img_name = image_paths[idx].stem
@@ -406,7 +391,7 @@ def extract_maps(
 
 
 def extract_save_all_maps(
-    config: str | Path,
+    config: ProjectConfig | dict | Path | str,
     shuffle: int = 1,
     trainingsetindex: int = 0,
     comparison_bodyparts: str | list[str] = "all",
@@ -420,13 +405,12 @@ def extract_save_all_maps(
     detector_snapshot_index: int | str | None = None,
     dest_folder: str | Path | None = None,
 ):
-    """
-    Extracts the scoremap, location refinement field and part affinity field prediction
-    of the model. The maps will be rescaled to the size of the input image and stored
-    in the corresponding model folder in /evaluation-results-pytorch.
+    """Extracts the scoremap, location refinement field and part affinity field
+    prediction of the model. The maps will be rescaled to the size of the input image
+    and stored in the corresponding model folder in /evaluation-results-pytorch.
 
     Args:
-        config: Full path of the config.yaml file as a string.
+        config (ProjectConfig | dict | Path | str): The project configuration.
         shuffle: Index of the shuffle for which to extract maps
         trainingset_index: Integer specifying which TrainingsetFraction to use. This
             variable can also be set to "all".
@@ -457,9 +441,8 @@ def extract_save_all_maps(
         >>>     shuffle=1,
         >>>     indices=[0, 1, 33]
         >>> )
-
     """
-    cfg = read_config_as_dict(config)
+    cfg = ProjectConfig.from_any(config)
     maps = extract_maps(
         config,
         shuffle=shuffle,
@@ -471,9 +454,7 @@ def extract_save_all_maps(
         detector_snapshot_index=detector_snapshot_index,
         modelprefix=modelprefix,
     )
-    bpts_to_plot = auxiliaryfunctions.intersection_of_body_parts_and_ones_given_by_user(
-        cfg, comparison_bodyparts
-    )
+    bpts_to_plot = auxiliaryfunctions.intersection_of_body_parts_and_ones_given_by_user(cfg, comparison_bodyparts)
 
     print("Saving plots...")
     for frac, values in maps.items():
@@ -529,15 +510,13 @@ def _get_context(
     detector_snapshot_index: int | str | None,
     device: str,
 ) -> list[dict] | None:
-    """Gets the context for top-down pose estimation models"""
+    """Gets the context for top-down pose estimation models."""
     if loader.pose_task != Task.TOP_DOWN:
         return None
 
     det_snapshots = []
     if detector_snapshot_index is not None:
-        det_snapshots = utils.get_model_snapshots(
-            detector_snapshot_index, loader.model_folder, Task.DETECT
-        )
+        det_snapshots = utils.get_model_snapshots(detector_snapshot_index, loader.model_folder, Task.DETECT)
 
     if detector_snapshot_index is None or len(det_snapshots) == 0:
         if detector_snapshot_index is None:
@@ -549,9 +528,7 @@ def _get_context(
         bboxes_train = loader.ground_truth_bboxes(mode="train")
         bboxes_test = loader.ground_truth_bboxes(mode="test")
         bboxes = {**bboxes_train, **bboxes_test}
-        return [
-            dict(bboxes=bboxes[str(img_path)]["bboxes"]) for img_path in image_paths
-        ]
+        return [dict(bboxes=bboxes[str(img_path)]["bboxes"]) for img_path in image_paths]
 
     detector_runner = utils.get_detector_inference_runner(
         model_config=loader.model_cfg,
@@ -599,12 +576,7 @@ def _collect_model_outputs(
     return (
         [image_idx],
         [result["inputs"][0]],
-        [
-            {
-                head: {k: v[0] for k, v in head_outputs.items()}
-                for head, head_outputs in result["outputs"].items()
-            }
-        ],
+        [{head: {k: v[0] for k, v in head_outputs.items()} for head, head_outputs in result["outputs"].items()}],
     )
 
 
@@ -640,17 +612,12 @@ def _parse_model_outputs(
 
     if "unique_bodypart" in outputs:
         heatmaps += [h for h in outputs["unique_bodypart"].get("heatmap", [])]
-        locrefs += [
-            strides["unique_bodypart"] * m
-            for m in outputs["unique_bodypart"].get("locref", [])
-        ]
+        locrefs += [strides["unique_bodypart"] * m for m in outputs["unique_bodypart"].get("locref", [])]
 
     return image, heatmaps, locrefs, paf
 
 
-def _prepare_maps_for_plotting(
-    maps: list[np.ndarray], image_size: tuple[int, int]
-) -> np.ndarray | None:
+def _prepare_maps_for_plotting(maps: list[np.ndarray], image_size: tuple[int, int]) -> np.ndarray | None:
     """Resizes all maps to the image size and concatenates them into a single array.
 
     Args:
@@ -665,10 +632,7 @@ def _prepare_maps_for_plotting(
 
     img_w, img_h = image_size
     return np.stack(
-        [
-            cv2.resize(map_, (img_w, img_h), interpolation=cv2.INTER_LINEAR)
-            for map_ in maps
-        ],
+        [cv2.resize(map_, (img_w, img_h), interpolation=cv2.INTER_LINEAR) for map_ in maps],
         axis=-1,
     )
 
@@ -680,7 +644,7 @@ def _get_maps_folder(
     model_prefix: str | None,
     dest_folder: str | Path | None,
 ) -> Path:
-    """Gets the destination folder for output maps"""
+    """Gets the destination folder for output maps."""
     if dest_folder is None:
         project_path = Path(cfg["project_path"])
         eval_folder = auxiliaryfunctions.get_evaluation_folder(

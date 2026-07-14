@@ -12,18 +12,20 @@ from __future__ import annotations
 
 import copy
 import logging
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 
 from deeplabcut.core.weight_init import WeightInitialization
+from deeplabcut.pose_estimation_pytorch.config import ModelConfig
 from deeplabcut.pose_estimation_pytorch.models.backbones import BACKBONES, BaseBackbone
 from deeplabcut.pose_estimation_pytorch.models.criterions import (
     CRITERIONS,
     LOSS_AGGREGATORS,
 )
-from deeplabcut.pose_estimation_pytorch.models.heads import BaseHead, HEADS
-from deeplabcut.pose_estimation_pytorch.models.necks import BaseNeck, NECKS
+from deeplabcut.pose_estimation_pytorch.models.heads import HEADS, BaseHead
+from deeplabcut.pose_estimation_pytorch.models.necks import NECKS, BaseNeck
 from deeplabcut.pose_estimation_pytorch.models.predictors import PREDICTORS
 from deeplabcut.pose_estimation_pytorch.models.target_generators import (
     TARGET_GENERATORS,
@@ -31,7 +33,7 @@ from deeplabcut.pose_estimation_pytorch.models.target_generators import (
 
 
 class PoseModel(nn.Module):
-    """A pose estimation model
+    """A pose estimation model.
 
     A pose estimation model is composed of a backbone, optionally a neck, and an
     arbitrary number of heads. Outputs are computed as follows:
@@ -39,7 +41,7 @@ class PoseModel(nn.Module):
 
     def __init__(
         self,
-        cfg: dict,
+        cfg: ModelConfig | dict | Path | str,
         backbone: BaseBackbone,
         heads: dict[str, BaseHead],
         neck: BaseNeck | None = None,
@@ -52,20 +54,16 @@ class PoseModel(nn.Module):
             neck: neck network architecture (default is None). Defaults to None.
         """
         super().__init__()
-        self.cfg = cfg
+        self.cfg: ModelConfig = ModelConfig.from_any(cfg)
         self.backbone = backbone
         self.heads = nn.ModuleDict(heads)
         self.neck = neck
         self.output_features = False
 
-        self._strides = {
-            name: _model_stride(self.backbone.stride, head.stride)
-            for name, head in heads.items()
-        }
+        self._strides = {name: _model_stride(self.backbone.stride, head.stride) for name, head in heads.items()}
 
     def forward(self, x: torch.Tensor, **backbone_kwargs) -> dict[str, dict[str, torch.Tensor]]:
-        """
-        Forward pass of the PoseModel.
+        """Forward pass of the PoseModel.
 
         Args:
             x: input images
@@ -120,8 +118,7 @@ class PoseModel(nn.Module):
             targets: dict of the targets for each model head group
         """
         return {
-            name: head.target_generator(self._strides[name], outputs[name], labels)
-            for name, head in self.heads.items()
+            name: head.target_generator(self._strides[name], outputs[name], labels) for name, head in self.heads.items()
         }
 
     def get_predictions(self, outputs: dict[str, dict[str, torch.Tensor]]) -> dict:
@@ -133,10 +130,7 @@ class PoseModel(nn.Module):
         Returns:
             A dictionary containing the predictions of each head group
         """
-        predictions = {
-            name: head.predictor(self._strides[name], outputs[name])
-            for name, head in self.heads.items()
-        }
+        predictions = {name: head.predictor(self._strides[name], outputs[name]) for name, head in self.heads.items()}
         if self.output_features:
             predictions["backbone"] = outputs["backbone"]
 
@@ -160,7 +154,7 @@ class PoseModel(nn.Module):
         cfg: dict,
         weight_init: None | WeightInitialization = None,
         pretrained_backbone: bool = False,
-    ) -> "PoseModel":
+    ) -> PoseModel:
         """
         Args:
             cfg: The configuration of the model to build.
@@ -182,7 +176,10 @@ class PoseModel(nn.Module):
 
         heads = {}
         for name, head_cfg in cfg["heads"].items():
-            head_cfg = copy.deepcopy(head_cfg)
+            # NOTE @deruyter92 2026-02-05: currently modules are added inside the config
+            # dictionary. This seems like a bad practice and is unsupported for typed configs.
+            # The intermediate head_cfg container is converted to a dictionary to avoid this issue.
+            head_cfg = dict(copy.deepcopy(head_cfg))
             if "type" in head_cfg["criterion"]:
                 head_cfg["criterion"] = CRITERIONS.build(head_cfg["criterion"])
             else:
@@ -190,18 +187,14 @@ class PoseModel(nn.Module):
                 criterions = {}
                 for loss_name, criterion_cfg in head_cfg["criterion"].items():
                     weights[loss_name] = criterion_cfg.get("weight", 1.0)
-                    criterion_cfg = {
-                        k: v for k, v in criterion_cfg.items() if k != "weight"
-                    }
+                    criterion_cfg = {k: v for k, v in criterion_cfg.items() if k != "weight"}
                     criterions[loss_name] = CRITERIONS.build(criterion_cfg)
 
                 aggregator_cfg = {"type": "WeightedLossAggregator", "weights": weights}
                 head_cfg["aggregator"] = LOSS_AGGREGATORS.build(aggregator_cfg)
                 head_cfg["criterion"] = criterions
 
-            head_cfg["target_generator"] = TARGET_GENERATORS.build(
-                head_cfg["target_generator"]
-            )
+            head_cfg["target_generator"] = TARGET_GENERATORS.build(head_cfg["target_generator"])
             head_cfg["predictor"] = PREDICTORS.build(head_cfg["predictor"])
             heads[name] = HEADS.build(head_cfg)
 
@@ -241,8 +234,7 @@ class PoseModel(nn.Module):
 
 
 def filter_state_dict(state_dict: dict, module: str) -> dict[str, torch.Tensor]:
-    """
-    Filters keys in the state dict for a module to only keep a given prefix. Removes
+    """Filters keys in the state dict for a module to only keep a given prefix. Removes
     the module from the keys (e.g. for module="backbone", "backbone.stage1.weight" will
     be converted to "stage1.weight" so the state dict can be loaded into the backbone
     directly).
@@ -268,7 +260,7 @@ def filter_state_dict(state_dict: dict, module: str) -> dict[str, torch.Tensor]:
 
 
 def _model_stride(backbone_stride: int | float, head_stride: int | float) -> float:
-    """Computes the model stride from a backbone and a head"""
+    """Computes the model stride from a backbone and a head."""
     if head_stride > 0:
         return backbone_stride / head_stride
 

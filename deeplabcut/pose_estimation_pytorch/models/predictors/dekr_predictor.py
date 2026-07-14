@@ -15,8 +15,8 @@ import torch
 import torch.nn.functional as F
 
 from deeplabcut.pose_estimation_pytorch.models.predictors import (
-    BasePredictor,
     PREDICTORS,
+    BasePredictor,
 )
 
 
@@ -107,9 +107,7 @@ class DEKRPredictor(BasePredictor):
         self.nms_threshold = nms_threshold
         self.apply_pose_nms = apply_pose_nms
 
-    def forward(
-        self, stride: float, outputs: dict[str, torch.Tensor]
-    ) -> dict[str, torch.Tensor]:
+    def forward(self, stride: float, outputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Forward pass of DEKRPredictor.
 
         Args:
@@ -139,41 +137,26 @@ class DEKRPredictor(BasePredictor):
         pose_ind, ctr_scores = self.get_top_values(center_heatmaps)
 
         posemap = posemap.permute(0, 2, 3, 1).view(batch_size, h * w, -1, 2)
-        poses = torch.zeros(batch_size, pose_ind.shape[1], num_joints, 2).to(
-            ctr_scores.device
-        )
-        for i in range(batch_size):
-            pose = posemap[i, pose_ind[i]]
-            poses[i] = pose
+
+        batch_indices = torch.arange(batch_size, device=pose_ind.device)[:, None]
+        poses = posemap[batch_indices, pose_ind]
 
         if self.use_heatmap:
             poses = self._update_pose_with_heatmaps(poses, heatmaps[:, :-1])
 
         if self.keypoint_score_type == "center":
-            score = (
-                ctr_scores.unsqueeze(-1)
-                .expand(batch_size, -1, num_joints)
-                .unsqueeze(-1)
-            )
+            score = ctr_scores.unsqueeze(-1).expand(batch_size, -1, num_joints).unsqueeze(-1)
         elif self.keypoint_score_type == "heatmap":
             score = self.get_heat_value(poses, heatmaps).unsqueeze(-1)
         elif self.keypoint_score_type == "combined":
-            center_score = (
-                ctr_scores.unsqueeze(-1)
-                .expand(batch_size, -1, num_joints)
-                .unsqueeze(-1)
-            )
+            center_score = ctr_scores.unsqueeze(-1).expand(batch_size, -1, num_joints).unsqueeze(-1)
             htmp_score = self.get_heat_value(poses, heatmaps).unsqueeze(-1)
             score = center_score * htmp_score
         else:
             raise ValueError(f"Unknown keypoint score type: {self.keypoint_score_type}")
 
-        poses[:, :, :, 0] = (
-            poses[:, :, :, 0] * scale_factors[1] + 0.5 * scale_factors[1]
-        )
-        poses[:, :, :, 1] = (
-            poses[:, :, :, 1] * scale_factors[0] + 0.5 * scale_factors[0]
-        )
+        poses[:, :, :, 0] = poses[:, :, :, 0] * scale_factors[1] + 0.5 * scale_factors[1]
+        poses[:, :, :, 1] = poses[:, :, :, 1] * scale_factors[0] + 0.5 * scale_factors[0]
 
         if self.clip_scores:
             score = torch.clip(score, min=0, max=1)
@@ -184,9 +167,7 @@ class DEKRPredictor(BasePredictor):
 
         return {"poses": poses_w_scores}
 
-    def get_locations(
-        self, height: int, width: int, device: torch.device
-    ) -> torch.Tensor:
+    def get_locations(self, height: int, width: int, device: torch.device) -> torch.Tensor:
         """Get locations for offsets.
 
         Args:
@@ -248,11 +229,7 @@ class DEKRPredictor(BasePredictor):
         num_joints = int(num_offset / 2)
         reg_poses = self.get_reg_poses(offsets, num_joints)
 
-        reg_poses = (
-            reg_poses.contiguous()
-            .view(batch_size, h * w, 2 * num_joints)
-            .permute(0, 2, 1)
-        )
+        reg_poses = reg_poses.contiguous().view(batch_size, h * w, 2 * num_joints).permute(0, 2, 1)
         reg_poses = reg_poses.contiguous().view(batch_size, -1, h, w).contiguous()
 
         return reg_poses
@@ -270,19 +247,15 @@ class DEKRPredictor(BasePredictor):
             # Assuming you have 'heatmap' tensor
             max_pooled_heatmap = predictor.max_pool(heatmap)
         """
-        pool1 = torch.nn.MaxPool2d(3, 1, 1)
+        torch.nn.MaxPool2d(3, 1, 1)
         pool2 = torch.nn.MaxPool2d(5, 1, 2)
-        pool3 = torch.nn.MaxPool2d(7, 1, 3)
-        map_size = (heatmap.shape[1] + heatmap.shape[2]) / 2.0
-        maxm = pool2(
-            heatmap
-        )  # Here I think pool 2 is a good match for default 17 pos_dist_tresh
+        torch.nn.MaxPool2d(7, 1, 3)
+        (heatmap.shape[1] + heatmap.shape[2]) / 2.0
+        maxm = pool2(heatmap)  # Here I think pool 2 is a good match for default 17 pos_dist_tresh
 
         return maxm
 
-    def get_top_values(
-        self, heatmap: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def get_top_values(self, heatmap: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Get top values from the heatmap.
 
         Args:
@@ -306,11 +279,9 @@ class DEKRPredictor(BasePredictor):
 
         return pos_ind, scores
 
-    def _update_pose_with_heatmaps(
-        self, _poses: torch.Tensor, kpt_heatmaps: torch.Tensor
-    ):
+    def _update_pose_with_heatmaps(self, _poses: torch.Tensor, kpt_heatmaps: torch.Tensor):
         """If a heatmap center is close enough from the regressed point, the final
-        prediction is the center of this heatmap
+        prediction is the center of this heatmap.
 
         Args:
             poses: poses tensor, shape (batch_size, num_animals, num_keypoints, 2)
@@ -322,31 +293,43 @@ class DEKRPredictor(BasePredictor):
         kpt_heatmaps *= maxm
         batch_size, num_keypoints, h, w = kpt_heatmaps.shape
         kpt_heatmaps = kpt_heatmaps.view(batch_size, num_keypoints, -1)
-        val_k, ind = kpt_heatmaps.topk(self.num_animals, dim=2)
+        _val_k, ind = kpt_heatmaps.topk(self.num_animals, dim=2)
 
         x = ind % w
         y = (ind / w).long()
-        heats_ind = torch.stack((x, y), dim=3)
+        heats_ind = torch.stack((x, y), dim=3)  # (batch_size, num_keypoints, num_animals, 2)
 
-        for b in range(batch_size):
-            for i in range(num_keypoints):
-                heat_ind = heats_ind[b, i].float()
-                pose_ind = poses[b, :, i]
-                pose_heat_diff = pose_ind[:, None, :] - heat_ind
-                pose_heat_diff.pow_(2)
-                pose_heat_diff = pose_heat_diff.sum(2)
-                pose_heat_diff.sqrt_()
-                keep_ind = torch.argmin(pose_heat_diff, dim=1)
+        # Calculate differences between all pose-heat pairs
+        # (batch_size, num_animals, num_keypoints, 1, 2) - (batch_size, 1, num_keypoints, num_animals, 2)
+        pose_heat_diff = poses.unsqueeze(3) - heats_ind.unsqueeze(
+            1
+        )  # (batch_size, num_animals, num_keypoints, num_animals, 2)
 
-                for p in range(keep_ind.shape[0]):
-                    if pose_heat_diff[p, keep_ind[p]] < self.max_absorb_distance:
-                        poses[b, p, i] = heat_ind[keep_ind[p]]
+        pose_heat_dist = torch.norm(pose_heat_diff, dim=-1)  # (batch_size, num_animals, num_keypoints, num_animals)
+
+        # Find closest heat point for each pose
+        keep_ind = torch.argmin(pose_heat_dist, dim=-1)  # (batch_size, num_animals, num_keypoints)
+
+        # Get minimum distances for filtering
+        min_distances = torch.gather(pose_heat_dist, 3, keep_ind.unsqueeze(-1)).squeeze(
+            -1
+        )  # (batch_size, num_animals, num_keypoints)
+
+        absorb_mask = min_distances < self.max_absorb_distance  # (batch_size, num_animals, num_keypoints)
+
+        # Create indices for gathering the correct heat points
+        batch_indices = torch.arange(batch_size, device=poses.device).view(-1, 1, 1)
+        keypoint_indices = torch.arange(num_keypoints, device=poses.device).view(1, 1, -1)
+
+        selected_heat_points = heats_ind[
+            batch_indices, keypoint_indices, keep_ind
+        ]  # (batch_size, num_animals, num_keypoints, 2)
+
+        poses = torch.where(absorb_mask.unsqueeze(-1), selected_heat_points, poses)
 
         return poses
 
-    def get_heat_value(
-        self, pose_coords: torch.Tensor, heatmaps: torch.Tensor
-    ) -> torch.Tensor:
+    def get_heat_value(self, pose_coords: torch.Tensor, heatmaps: torch.Tensor) -> torch.Tensor:
         """Get heat values for pose coordinates and heatmaps.
 
         Args:
@@ -361,9 +344,7 @@ class DEKRPredictor(BasePredictor):
             heat_values = predictor.get_heat_value(pose_coords, heatmaps)
         """
         h, w = heatmaps.shape[2:]
-        heatmaps_nocenter = heatmaps[:, :-1].flatten(
-            2, 3
-        )  # (batch_size, num_joints, h*w)
+        heatmaps_nocenter = heatmaps[:, :-1].flatten(2, 3)  # (batch_size, num_joints, h*w)
 
         # Predicted poses based on the offset can be outside the image
         x = torch.clamp(torch.floor(pose_coords[:, :, :, 0]), 0, w - 1).long()
@@ -384,6 +365,7 @@ class DEKRPredictor(BasePredictor):
             Pose proposals after non-maximum suppression.
         """
         batch_size, num_people, num_joints, _ = poses.shape
+        device = poses.device
         if num_people == 0:
             return poses
 
@@ -391,19 +373,11 @@ class DEKRPredictor(BasePredictor):
         w = xy[..., 0].max(dim=-1)[0] - xy[..., 0].min(dim=-1)[0]
         h = xy[..., 1].max(dim=-1)[0] - xy[..., 1].min(dim=-1)[0]
         area = torch.clamp((w * w) + (h * h), min=1)
-        area = area.repeat(1, 1, num_people * num_joints)
-        area = area.reshape(batch_size, num_people, num_people, num_joints)
-
-        # TODO(niels): Optimize code
-        # swap (batch, num_people) dims to be able to broadcast the diff
-        xy_ = xy.transpose(1, 0)
+        area = area.unsqueeze(1).unsqueeze(3).expand(batch_size, num_people, num_people, num_joints)
 
         # compute the difference between keypoints
-        pose_diff = xy_[:, None] - xy_
+        pose_diff = xy.unsqueeze(2) - xy.unsqueeze(1)
         pose_diff.pow_(2)
-
-        # put batch first again
-        pose_diff = pose_diff.transpose(2, 0)
 
         # Compute error between people pairs
         pose_dist = pose_diff.sum(dim=-1)
@@ -413,38 +387,28 @@ class DEKRPredictor(BasePredictor):
         pose_dist = (pose_dist < pose_thresh).sum(dim=-1)
         nms_pose = pose_dist > self.nms_threshold  # shape (b, num_people, num_people)
 
-        for batch_idx in range(batch_size):
-            # TODO(niels): Optimize code
-            kept = torch.zeros(num_people, dtype=torch.bool)
-            batch_order = []
-            kept_indices = set()
-            ignored_indices = set()
-            for person_idx in range(num_people):
-                if person_idx in ignored_indices:
-                    continue
+        # Upper triangular mask matrix to avoid double processing
+        triu_mask = torch.triu(torch.ones(num_people, num_people, device=device), diagonal=1).bool()
 
-                kept_indices.add(person_idx)
-                batch_order.append(person_idx)
-                kept[person_idx] = True
+        suppress_pairs = nms_pose & triu_mask.unsqueeze(0)  # (batch_size, num_people, num_people)
 
-                suppressed = (
-                    nms_pose[batch_idx, person_idx]
-                    .nonzero()
-                    .detach()
-                    .reshape(-1)
-                    .tolist()
-                )
-                for to_suppress in suppressed:
-                    if to_suppress not in kept_indices:
-                        ignored_indices.add(to_suppress)
+        # For each batch, determine which poses to suppress
+        suppressed = suppress_pairs.any(dim=1)  # (batch_size, num_people)
 
-            for idx in ignored_indices:
-                batch_order.append(idx)
+        kept = ~suppressed  # (batch_size, num_people)
 
-            # Mask out suppressed predictions
-            poses[batch_idx, ~kept] = -1
+        # Indices for reordering
+        batch_indices = torch.arange(batch_size, device=device).unsqueeze(1)
+        people_indices = torch.arange(num_people, device=device).unsqueeze(0).expand(batch_size, -1)
 
-            # Re-order predictions so the non-suppressed ones are up top
-            poses[batch_idx] = poses[batch_idx, batch_order]
+        # non-suppressed first, then suppressed
+        sort_keys = kept.float() + (people_indices.float() + 1) / (num_people + 1)
+        _, sort_indices = torch.sort(sort_keys, dim=1, descending=True)
+
+        # Mask out suppressed predictions
+        poses[~kept] = -1
+
+        # Re-order predictions so the non-suppressed ones are up top
+        poses = poses[batch_indices, sort_indices]
 
         return poses
