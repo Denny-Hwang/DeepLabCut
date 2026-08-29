@@ -39,6 +39,18 @@ SUPPORTED_VIDEOS = "avi", "mp4", "mov", "mpeg", "mpg", "mpv", "mkv", "flv", "qt"
 DEFAULT_EXCLUDE_PATTERNS: tuple[str, ...] = "*_labeled.*", "*_full.*"
 
 
+def robust_video_stem(path: str | Path) -> str:
+    """Return a video's filename without extension, splitting on both POSIX and
+    Windows separators.
+
+    ``config.yaml`` stores video paths as they were on the machine used for labeling,
+    so a project labeled on Windows holds backslash-separated paths that
+    ``pathlib.Path`` cannot parse on Linux/macOS (and would keep as one long stem).
+    This helper lets such projects be processed on any platform.
+    """
+    return Path(str(path).replace("\\", "/")).stem
+
+
 class VideoReader:
     def __init__(self, video_path):
         if not Path(video_path).is_file():

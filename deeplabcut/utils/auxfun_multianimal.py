@@ -32,6 +32,7 @@ import pandas as pd
 
 from deeplabcut.core.trackingutils import TRACK_METHODS
 from deeplabcut.utils import auxiliaryfunctions, conversioncode
+from deeplabcut.utils.auxfun_videos import robust_video_stem
 
 
 def reorder_individuals_in_df(df: pd.DataFrame, order: list) -> pd.DataFrame:
@@ -220,7 +221,7 @@ def returnlabelingdata(config):
     """Returns a specific labeleing data set -- the user will be asked which one."""
     cfg = auxiliaryfunctions.read_config(config)
     videos = cfg["video_sets"].keys()
-    video_names = [Path(i).stem for i in videos]
+    video_names = [robust_video_stem(i) for i in videos]
     folders = [Path(config).parent / "labeled-data" / Path(i) for i in video_names]
     for folder in folders:
         print("Do you want to get the data for folder:", folder, "?")
@@ -258,7 +259,7 @@ def convert2_maDLC(config: str | Path, userfeedback=True, forceindividual=None):
     """
     cfg = auxiliaryfunctions.read_config(config)
     videos = cfg["video_sets"].keys()
-    video_names = [Path(i).stem for i in videos]
+    video_names = [robust_video_stem(i) for i in videos]
     folders = [Path(config).parent / "labeled-data" / Path(i) for i in video_names]
 
     individuals, uniquebodyparts, multianimalbodyparts = extractindividualsandbodyparts(cfg)
@@ -360,7 +361,7 @@ def convert_single2multiplelegacyAM(config, userfeedback=True, target=None):
     """
     cfg = auxiliaryfunctions.read_config(config)
     videos = cfg["video_sets"].keys()
-    video_names = [Path(i).stem for i in videos]
+    video_names = [robust_video_stem(i) for i in videos]
     folders = [Path(config).parent / "labeled-data" / Path(i) for i in video_names]
 
     prefixes, uniquebodyparts, multianimalbodyparts = extractindividualsandbodyparts(cfg)
