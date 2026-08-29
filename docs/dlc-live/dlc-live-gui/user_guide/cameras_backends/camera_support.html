@@ -267,6 +267,7 @@
 <li class="toctree-l3"><a class="reference internal" href="gentl_backend.html">GenTL backend</a></li>
 </ul>
 </details></li>
+<li class="toctree-l2"><a class="reference internal" href="../camera_config.html">Camera configuration</a></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../misc/misc_landing.html">Additional resources</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../misc/modelzoo_downloads.html">Pre-trained models</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../misc/timestamp_format.html">Video timestamp format</a></li>
@@ -276,6 +277,10 @@
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../benchmark.html">DeepLabCut benchmark</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../../recipes/TechHardware.html">Technical &amp; hardware considerations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Development</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://deeplabcut.github.io/DeepLabCut/dev/">Developer Documentation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Additional guides (Recipes)</span></p>
 <ul class="nav bd-sidenav">
@@ -553,9 +558,9 @@ document.write(`
 <p>You can select the backend in the GUI from the “Backend” dropdown, or in your configuration file:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">  </span><span class="err">...</span>
-<span class="w">  </span><span class="nt">&quot;camera&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"camera"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="err">...</span>
-<span class="w">    </span><span class="nt">&quot;backend&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aravis&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"backend"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aravis"</span><span class="p">,</span>
 <span class="w">    </span><span class="err">...</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
