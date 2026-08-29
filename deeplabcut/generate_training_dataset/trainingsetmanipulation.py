@@ -32,7 +32,7 @@ from deeplabcut.utils import (
     auxiliaryfunctions,
     conversioncode,
 )
-from deeplabcut.utils.auxfun_videos import VideoReader
+from deeplabcut.utils.auxfun_videos import VideoReader, robust_video_stem
 
 
 def comparevideolistsanddatafolders(config: str | Path):
@@ -301,7 +301,7 @@ def check_labels(
         Labels = ["+", ".", "x"]
     cfg = read_config(config)
     videos = cfg["video_sets"].keys()
-    video_names = [Path(video).stem for video in videos]
+    video_names = [robust_video_stem(video) for video in videos]
 
     folders = [Path(cfg["project_path"]) / "labeled-data" / Path(i) for i in video_names]
     print("Creating images with labels by {}.".format(cfg["scorer"]))
@@ -432,7 +432,7 @@ def parse_video_filenames(videos: list[str]) -> list[str]:
     filenames = []
     filename_to_videos = {}
     for video in videos:
-        filename = Path(video).stem
+        filename = robust_video_stem(video)
         videos_with_filename = filename_to_videos.get(filename, [])
         if len(videos_with_filename) == 0:
             filenames.append(filename)

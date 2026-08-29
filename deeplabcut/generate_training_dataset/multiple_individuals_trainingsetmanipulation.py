@@ -29,6 +29,7 @@ from deeplabcut.utils import (
     auxfun_multianimal,
     auxiliaryfunctions,
 )
+from deeplabcut.utils.auxfun_videos import robust_video_stem
 
 from .trainingsetmanipulation import (
     MakeInference_yaml,
@@ -614,7 +615,7 @@ def convert_cropped_to_standard_dataset(
         print("Deleting crops...")
         data_path = Path(project_path) / "labeled-data"
         for video in cfg["video_sets"]:
-            filename = Path(video).stem
+            filename = robust_video_stem(video)
             if "_cropped" in video:  # One can never be too safe...
                 shutil.rmtree(data_path / filename, ignore_errors=True)
 
