@@ -744,9 +744,11 @@ class CTDInferenceRunner(PoseInferenceRunner):
 
         In-place changes to the predictions dict.
         """
-        # reorder the previous poses so the indices match the track IDs
+        # reorder the previous poses so the indices match the track IDs; row j of the
+        # predictions holds the pose for track ID self._idx_to_id[j], so placing row j
+        # at index self._idx_to_id[j] requires gathering with the inverse permutation
         if self._idx_to_id is not None:
-            predictions["bodyparts"] = predictions["bodyparts"][self._idx_to_id]
+            predictions["bodyparts"] = predictions["bodyparts"][np.argsort(self._idx_to_id)]
 
         # mask all keypoints below the CTD tracking threshold
         prev_pose = predictions["bodyparts"][..., :3].copy()
