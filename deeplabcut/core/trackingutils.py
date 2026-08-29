@@ -613,7 +613,9 @@ class SORTSkeleton(SORTBase):
             if tracker.time_since_update > self.max_age:
                 self.trackers.pop(i)
                 continue
-            state = tracker.predict()
+            # predict() was already called this frame to build poses_ref; read the
+            # state without advancing the filter again (as SORTBox/SORTEllipse do)
+            state = tracker.state
             states.append(np.r_[state, [tracker.id, int(animalindex[i])]])
         if len(states) > 0:
             return np.stack(states)
