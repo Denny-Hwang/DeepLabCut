@@ -180,8 +180,8 @@ class Tracklet:
             interp = diff[..., np.newaxis] * np.arange(1, e - s)
             data = data1 + np.rollaxis(interp, axis=2)
             data[..., 2] = 0.5  # Chance detections
-            if data.shape[1] == 4:
-                data[:, 3] = self.identity
+            if data.shape[2] == 4:
+                data[..., 3] = self.identity
             fills.append(Tracklet(data, np.arange(s + 1, e)))
         if not fills:
             return self
