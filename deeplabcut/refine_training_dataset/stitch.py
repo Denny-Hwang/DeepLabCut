@@ -782,10 +782,8 @@ class TrackletStitcher:
                 dists.append((n, dist))
             if not dists:
                 continue
-            if len(dists) == 1:
-                ind = easy_fit[dists[0][0]]
-            else:
-                ind = sorted(dists, key=lambda x: x[1])[0][0]
+            # dists holds indices into the easy_fit sublist; map back to full tracks
+            ind = easy_fit[min(dists, key=lambda x: x[1])[0]]
             self.tracks[ind] += res
             residuals.remove(res)
         return residuals
