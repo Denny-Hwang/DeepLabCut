@@ -44,7 +44,9 @@ def columnwise_spline_interp(data, max_gap=0):
     for i in range(ncols):
         mask = valid[:, i]
         if np.sum(mask) > 3:  # Make sure there are enough points to fit the cubic spline
-            spl = CubicSpline(x[mask], temp[mask, i])
+            # extrapolate=False returns NaN beyond the spline knots, so edge gaps
+            # are left unfilled rather than extrapolated
+            spl = CubicSpline(x[mask], temp[mask, i], extrapolate=False)
             y = spl(x)
             if max_gap > 0:
                 inds = np.flatnonzero(np.r_[True, np.diff(mask), True])
@@ -55,8 +57,6 @@ def columnwise_spline_interp(data, max_gap=0):
                     if is_nan and n > max_gap:
                         to_fill[ind : ind + n] = False
                 y[~to_fill] = np.nan
-            # Get rid of the interpolation beyond the spline knots
-            y[y == 0] = np.nan
             temp[:, i] = y
     return temp
 
