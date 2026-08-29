@@ -73,7 +73,7 @@ def resolve_bu_shuffle(
         if len(snapshots) == 0:
             raise ValueError(f"No snapshots found for shuffle={shuffle} in {loader.model_folder}")
 
-        if snapshot_index > len(snapshots):
+        if snapshot_index >= len(snapshots):
             snapshot_str = "\n".join([f"  {i}: {s.path.name}" for i, s in enumerate(snapshots)])
             raise ValueError(f"Snapshot index {snapshot_index} is out of range. Existing snapshots: {snapshot_str}")
 
@@ -392,7 +392,7 @@ class CondFromFile:
             data = pickle.load(f)
 
         frames = [f for f in data.keys() if isinstance(f, int)]
-        n_frames = max(*frames) + 1
+        n_frames = max(frames) + 1 if frames else 0
 
         parsed = []
         for i in range(n_frames):
