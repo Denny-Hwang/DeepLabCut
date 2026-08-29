@@ -712,7 +712,11 @@ class CTDInferenceRunner(PoseInferenceRunner):
         self._bu_age += 1
         if (
             self._prev_pose is None
-            or (self._missing_idvs and self.tracking.bu_on_lost_idv and self._bu_age >= self.tracking.bu_max_frequency)
+            or (
+                self._missing_idvs
+                and self.tracking.bu_on_lost_idv
+                and (self.tracking.bu_max_frequency is None or self._bu_age >= self.tracking.bu_max_frequency)
+            )
             or (self.tracking.bu_min_frequency is not None and self._bu_age >= self.tracking.bu_min_frequency)
         ):
             self._bu_age = 0
