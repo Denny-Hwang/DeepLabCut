@@ -731,7 +731,9 @@ class TrackletStitcher:
                 warnings.warn(f"Only {len(self.paths)} tracks could be reconstructed.", stacklevel=2)
 
         finally:
-            if self.paths is None:
+            # None means an exception interrupted the search; an empty list means
+            # both flow problems were infeasible and no track could be built.
+            if not self.paths:
                 raise ValueError(f"Could not reconstruct {self.n_tracks} tracks from the tracklets given.")
 
             self.tracks = np.asarray([sum(path) for path in self.paths if path])
